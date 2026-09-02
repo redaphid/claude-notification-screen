@@ -7,9 +7,17 @@ display: set text + background color, text marquees.
 ## Hardware
 Two physical units, both ESP32-S3 (2MB PSRAM, 16MB flash), round ~1.28"
 display, USB-C via a WCH CH343 UART bridge. Believed to be a Waveshare
-ESP32-S3-Touch-LCD-1.28-style board, but pin numbers found online for this
+ESP32-S3-LCD-1.28-style board, but pin numbers found online for this
 board are inconsistent across sources (see below) — likely a rebrand/clone
 sold under a different name, not verified as genuine Waveshare.
+
+**Correction (per Aaron, 2026-09-02):** probably the **non-touch**
+ESP32-S3-LCD-1.28, not the Touch variant. Earlier assumption that it has
+CST816S touch + QMI8658 IMU (based on the spencershepard DEV_Config.h,
+which includes Touch_INT_PIN/Touch_RST_PIN/BAT_ADC_PIN) may not apply to
+this unit — that reference repo might just be for a different/superset
+board. Don't assume touch or IMU hardware is present; verify before writing
+any code that depends on it.
 
 - **Unit 1** — port `/dev/cu.usbmodem5B5F0002731`. Screen never lit under
   any firmware tried (raw GPIO, LEDC PWM, exact official register-level
