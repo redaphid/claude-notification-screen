@@ -1,3 +1,5 @@
 .pio/
 backups/
 .claude/
+outputs/
+harness/build/
