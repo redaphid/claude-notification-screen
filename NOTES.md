@@ -1,4 +1,43 @@
-# Status (stopped mid-debug, 2026-09-02)
+# Status (2026-09-02, evening — SCREEN WORKS)
+
+## What changed this session
+- **The display works.** Camera-verified on the bench: solid RED/GREEN/BLUE
+  fills with text, correct colours. `TFT_BL 2` was the whole problem; this
+  board is **GPIO40**, reset is **GPIO12**. Moved to **LovyanGFX** so the panel
+  config lives in `src/display.h` instead of inside a library folder.
+- **"Unit 1" was never defective.** The board on this bench reports USB serial
+  **5B5F000273** — that is the unit the notes below call possibly-defective
+  (macOS port `/dev/cu.usbmodem5B5F0002731`). Its screen lights fine. The board
+  was innocent; the backlight pin was wrong. Do not RMA it.
+- **Sprite byte order confirmed by experiment**, not by reading docs: raw
+  `uint16` words written straight into a LovyanGFX 16-bit sprite display
+  correctly when packed as **byte-swapped RGB565**. That is what
+  `effects/effect.h`'s `effect_rgb565()` does; it is proven, leave it alone.
+- **This machine is Linux now**, not the Mac. Port is `/dev/ttyACM0`
+  (CH343 bridge), so `ARDUINO_USB_CDC_ON_BOOT=0` — serial rides UART0.
+- **Stage 1 firmware written**: ESP-NOW receive + mesh relay + fixed-point
+  plasma + boot self-test + fps HUD. Builds. Flashed but **not yet visually
+  confirmed** — see the power note below.
+
+## Power: the badge browns out when the radio starts
+Bringing up WiFi is the biggest current spike this board draws. On a marginal
+supply it collapses the 3V3 rail and takes the CH343 bridge down with the
+ESP32, which looks from the host side like the board *hanging inside*
+`WiFi.mode()` — the last serial line before silence — while USB re-enumerates
+every ~6 seconds. On this bench the trigger was the laptop dropping into a
+low-power state and starving the port.
+
+Two consequences worth keeping:
+1. `espNowInit()` now drops the CPU to 80MHz across the spike, lowers TX power,
+   and restores full speed afterwards. Radio failure no longer takes the
+   visuals down — a badge with no radio renders its own heartbeat instead of
+   going dark in someone's hand. This matters in the field, where badges run
+   off power banks and flat LiPos, not a bench supply.
+2. When the host's `cdc_acm` wedges (`OSError: [Errno 71] Protocol error` on
+   every esptool reset attempt, USB device still listed), the port is
+   unrecoverable without root — **replug the cable**. `scripts/test/serial-watch.py`
+   reads across resets and re-enumerations so a reset loop is legible rather
+   than silent.
 
 ## Goal
 BLE REST-ish interface so Claude can post notifications to an ESP32 round
@@ -44,8 +83,10 @@ not the one this firmware targets. Not yet unboxed/evaluated.
 ESP32-S3 (2MB PSRAM, 16MB flash), round 1.28" 240x240 GC9A01A IPS, USB-C via a
 WCH CH343 UART bridge.
 
-- **Unit 1** — port `/dev/cu.usbmodem5B5F0002731`. Screen never lit under
-  any firmware tried (raw GPIO, LEDC PWM, exact official register-level
+- **Unit 1** — port `/dev/cu.usbmodem5B5F0002731`, USB serial 5B5F000273.
+  **SUPERSEDED: this board is fine.** It is the one on the bench today and its
+  screen lights correctly with BL=GPIO40. Original note follows.
+  Screen never lit under any firmware tried (raw GPIO, LEDC PWM, exact official register-level
   GC9A01 init sequence). Currently unclear if defective or just never got
   the right pin. Original stock firmware was overwritten early on and was
   NOT backed up first (mistake — should have `esptool read_flash` before
@@ -121,7 +162,9 @@ not stored as strings).
 - `platformio.ini`: env `waveshare_esp32s3_touch_lcd128`, board
   `esp32-s3-devkitc-1`, 16MB flash, qio_qspi PSRAM, currently points
   `upload_port`/`monitor_port` at unit 2's port (`5B910466501`).
-- `src/main.cpp` currently holds the **3-pin blink sweep test**, not the
+- `src/main.cpp` now holds the **Stage 1 badge firmware** (ESP-NOW receive,
+  mesh relay, plasma, self-test, HUD). Superseded note follows.
+  `src/main.cpp` previously held the **3-pin blink sweep test**, not the
   real firmware. The real BLE marquee firmware (GC9A01/Adafruit,
   NimBLE, JSON `{text, bg, color, speedMs}` over a Nordic-UART-UUID
   characteristic) was overwritten for this diagnostic — need to
