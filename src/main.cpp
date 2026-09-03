@@ -40,6 +40,15 @@ static uint32_t relayCount = 0;
 // Smoothed values actually handed to the visual. Asymmetric on purpose: fast
 // attack so a kick lands now, slow release so a dropped packet reads as a slow
 // exhale instead of a flicker.
+// Relays are queued here rather than sent from the receive callback:
+// esp_now_send() from inside the callback runs in the WiFi task and can
+// deadlock or silently drop. A short ring is plenty -- at 30Hz a badge that
+// falls more than a few packets behind should drop them, not buffer them.
+static constexpr int RELAY_QUEUE_LEN = 4;
+static ChorusPacket relayQueue[RELAY_QUEUE_LEN];
+static volatile uint8_t relayHead = 0, relayTail = 0;
+static uint32_t relayDropped = 0;
+
 static float smoothed[FEAT_COUNT] = {0, 0, 0, 0};
 static constexpr float ATTACK = 0.65f;
 static constexpr float RELEASE = 0.12f;
@@ -185,8 +194,13 @@ static void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
   // Mesh rebroadcast: a dense crowd of badges becomes a *good* topology.
   if (pkt.hop < CHORUS_MAX_HOP) {
     pkt.hop++;
-    broadcast(pkt);
-    relayCount++;
+    const uint8_t next = (uint8_t)((relayHead + 1) % RELAY_QUEUE_LEN);
+    if (next == relayTail) {
+      relayDropped++;  // queue full: drop the oldest news, not the newest
+    } else {
+      relayQueue[relayHead] = pkt;
+      relayHead = next;
+    }
   }
 }
 
@@ -307,6 +321,7 @@ void setup() {
   canvas.fillSprite(0);
 
   selfTest();
+  canvas.fillSprite(0);  // plasma only writes inside the circle; clear the rest
   plasmaInit();
   radioUp = espNowInit();
   if (!radioUp) {
@@ -356,6 +371,13 @@ void loop() {
     }
   }
 
+  // Drain queued relays here, in loop context, where esp_now_send() is safe.
+  while (relayTail != relayHead) {
+    broadcast(relayQueue[relayTail]);
+    relayTail = (uint8_t)((relayTail + 1) % RELAY_QUEUE_LEN);
+    relayCount++;
+  }
+
   for (int i = 0; i < FEAT_COUNT; i++) {
     const float a = (target[i] > smoothed[i]) ? ATTACK : RELEASE;
     smoothed[i] += (target[i] - smoothed[i]) * a;
@@ -370,7 +392,9 @@ void loop() {
   canvas.setTextSize(1);
   canvas.setTextColor(canvas.color888(255, 255, 255));
   canvas.drawString(isConductor ? "CONDUCTOR" : (radioUp ? "RECEIVER" : "NO RADIO"), SCREEN_W / 2, 60);
-  canvas.drawString(String(fps) + " fps  rx:" + String(rxCount), SCREEN_W / 2, 180);
+  char hud[40];
+  snprintf(hud, sizeof(hud), "%lu fps  rx:%lu", (unsigned long)fps, (unsigned long)rxCount);
+  canvas.drawString(hud, SCREEN_W / 2, 180);
 
   canvas.pushSprite(0, 0);
 
@@ -382,6 +406,7 @@ void loop() {
                   isConductor ? "CONDUCTOR" : "RECEIVER", (unsigned long)fps,
                   smoothed[FEAT_BASS], smoothed[FEAT_MID], smoothed[FEAT_TREBLE],
                   smoothed[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount);
+    if (relayDropped) Serial.printf("[badge] relay queue dropped %lu\n", (unsigned long)relayDropped);
     frames = 0;
     lastReportMs = now;
   }
