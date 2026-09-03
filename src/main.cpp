@@ -27,6 +27,13 @@ static constexpr uint16_t MOCK_BPM = 118;
 static bool isConductor = false;
 static bool radioUp = false;
 
+// Survives a reset, so a badge can notice it is caught in a boot loop. If the
+// radio brings the rail down three times running -- a tired power bank, a thin
+// cable -- the next boot skips it entirely and the badge renders locally. A
+// giveaway badge that looks dead is worse than one that is merely alone.
+RTC_DATA_ATTR static uint32_t bootAttempts = 0;
+static constexpr uint32_t BOOT_ATTEMPTS_BEFORE_GIVING_UP_ON_RADIO = 3;
+
 // --- feature state -------------------------------------------------------
 // Written from the ESP-NOW receive callback (WiFi task), read from the render
 // loop, so it lives behind a spinlock rather than being merely volatile.
@@ -75,6 +82,10 @@ static void effectsInit() {
 
 // --- ESP-NOW -------------------------------------------------------------
 static void broadcast(const ChorusPacket &pkt) {
+  // esp_now_send() reads driver state that only exists after a successful
+  // init, so calling it without one is a null dereference, not a no-op. A
+  // conductor whose radio failed must keep rendering, not panic.
+  if (!radioUp) return;
   esp_now_send(BROADCAST_ADDR, (const uint8_t *)&pkt, sizeof(pkt));
 }
 
@@ -207,11 +218,38 @@ static void selfTest() {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  Serial.printf("\n[badge] boot, reset reason %d (9 = brownout)\n", (int)esp_reset_reason());
+  bootAttempts++;
+  Serial.printf("\n[badge] boot, reset reason %d (9 = brownout), attempt %lu\n",
+                (int)esp_reset_reason(), (unsigned long)bootAttempts);
 
   pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
   delay(10);
+#ifdef BADGE_FORCE_CONDUCTOR
+  // Bench builds: nobody is in the room to hold BOOT down at reset.
+  isConductor = true;
+#else
   isConductor = (digitalRead(PIN_BOOT_BUTTON) == LOW);
+#endif
+
+  // The radio comes up FIRST, before the panel and its backlight are drawing
+  // anything. Bringing up WiFi is the biggest current spike this board makes,
+  // and on a marginal supply it collapses the 3V3 rail -- taking the USB bridge
+  // down with it, which from a host looks exactly like a hang. Every milliamp
+  // not being spent on a backlight at that instant is headroom.
+#ifdef BADGE_SKIP_RADIO
+  // Bench builds on a marginal USB supply: sustained transmit collapses the
+  // rail on some hosts, and the visuals are what is being looked at.
+  Serial.println("[badge] built with BADGE_SKIP_RADIO -- radio off, rendering locally");
+  radioUp = false;
+#else
+  if (bootAttempts > BOOT_ATTEMPTS_BEFORE_GIVING_UP_ON_RADIO) {
+    Serial.println("[badge] too many failed boots -- skipping radio, rendering locally");
+    radioUp = false;
+  } else {
+    radioUp = espNowInit();
+    if (!radioUp) Serial.println("[badge] no radio -- falling back to local heartbeat");
+  }
+#endif
 
   display.init();
   display.setBrightness(255);
@@ -226,14 +264,8 @@ void setup() {
   canvas.fillSprite(0);
 
   selfTest();
-  canvas.fillSprite(0);  // plasma only writes inside the circle; clear the rest
+  canvas.fillSprite(0);  // effects only write inside the circle; clear the rest
   effectsInit();
-  radioUp = espNowInit();
-  if (!radioUp) {
-    // A badge with no radio still has a screen. It renders its own idle
-    // heartbeat rather than going dark in someone's hand.
-    Serial.println("[badge] no radio -- falling back to local heartbeat");
-  }
 
   Serial.printf("[badge] role: %s\n", isConductor ? "CONDUCTOR (mock DJ)" : "RECEIVER");
   Serial.printf("[badge] free heap %u, free psram %u\n",
@@ -331,5 +363,8 @@ void loop() {
     if (relayDropped) Serial.printf("[badge] relay queue dropped %lu\n", (unsigned long)relayDropped);
     frames = 0;
     lastReportMs = now;
+    if (bootAttempts && now > 3000) {
+      bootAttempts = 0;  // rendering steadily; this boot was a good one
+    }
   }
 }
