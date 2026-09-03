@@ -1,3 +1,6 @@
 .pio/
 backups/
 .claude/
+outputs/
+web/firmware/
+web/manifest.json
