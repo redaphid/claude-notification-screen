@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <Preferences.h>
 #include <esp_system.h>
 #include <math.h>
 
@@ -20,18 +21,30 @@ static RoundBadgeDisplay display;
 static LGFX_Sprite canvas(&display);
 
 static const uint8_t BROADCAST_ADDR[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-static constexpr uint32_t CONDUCTOR_INTERVAL_MS = 33;  // ~30Hz
+// Broadcast cadence. This is checked once per rendered frame, so it must not
+// sit just above the frame time or it aliases: at 31fps (32ms/frame) a 33ms
+// interval is only satisfied every second frame, which silently halves the
+// packet rate to ~16Hz. Measured on hardware before this was 30. Keep it below
+// the frame time and let the render loop set the real cadence.
+static constexpr uint32_t CONDUCTOR_INTERVAL_MS = 30;
 static constexpr uint32_t FEATURE_STALE_MS = 300;
 static constexpr uint16_t MOCK_BPM = 118;
 
 static bool isConductor = false;
 static bool radioUp = false;
 
-// Survives a reset, so a badge can notice it is caught in a boot loop. If the
-// radio brings the rail down three times running -- a tired power bank, a thin
-// cable -- the next boot skips it entirely and the badge renders locally. A
-// giveaway badge that looks dead is worse than one that is merely alone.
-RTC_DATA_ATTR static uint32_t bootAttempts = 0;
+// Counts boots that never reached steady rendering, so a badge can notice it is
+// caught in a boot loop: if the radio brings the rail down three times running
+// -- a tired power bank, a thin cable -- the next boot skips the radio and the
+// badge renders locally. A giveaway badge that looks dead is worse than one
+// that is merely alone.
+//
+// This lives in flash, NOT in RTC memory. RTC memory survives a panic or a
+// software reset, but a brownout is a power loss and wipes it -- which is
+// exactly the failure this counter exists to escape. Measured on hardware: the
+// RTC version never counted past 1 while the board looped.
+static Preferences prefs;
+static uint32_t bootAttempts = 0;
 static constexpr uint32_t BOOT_ATTEMPTS_BEFORE_GIVING_UP_ON_RADIO = 3;
 
 // --- feature state -------------------------------------------------------
@@ -45,6 +58,11 @@ static bool rxSeen = false;
 static uint32_t rxCount = 0;
 static uint32_t relayCount = 0;
 static uint8_t rxShader = 0;
+
+// Whether a packet actually left the antenna, rather than merely being handed
+// to the driver. A conductor that thinks it is broadcasting into a silent
+// swarm is the hardest failure to diagnose in a field.
+static uint32_t txOk = 0, txFail = 0;
 
 // Smoothed values actually handed to the visual. Asymmetric on purpose: fast
 // attack so a kick lands now, slow release so a dropped packet reads as a slow
@@ -87,6 +105,14 @@ static void broadcast(const ChorusPacket &pkt) {
   // conductor whose radio failed must keep rendering, not panic.
   if (!radioUp) return;
   esp_now_send(BROADCAST_ADDR, (const uint8_t *)&pkt, sizeof(pkt));
+}
+
+static void onEspNowSent(const uint8_t *mac, esp_now_send_status_t status) {
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    txOk++;
+  } else {
+    txFail++;
+  }
 }
 
 static void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
@@ -134,7 +160,13 @@ static bool espNowInit() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   WiFi.setSleep(false);  // ESP-NOW receive must not miss packets to modem sleep
-  WiFi.setTxPower(WIFI_POWER_11dBm);
+  // Transmit power is a power-budget knob, not just a range knob: sustained
+  // transmit is what collapses a marginal supply. Lower it on anything running
+  // off a tired power bank.
+#ifndef BADGE_TX_POWER
+#define BADGE_TX_POWER WIFI_POWER_11dBm
+#endif
+  WiFi.setTxPower(BADGE_TX_POWER);
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
   setCpuFrequencyMhz(cpuBefore);
@@ -144,6 +176,7 @@ static bool espNowInit() {
     return false;
   }
   esp_now_register_recv_cb(onEspNowRecv);
+  esp_now_register_send_cb(onEspNowSent);
 
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BROADCAST_ADDR, 6);
@@ -218,7 +251,9 @@ static void selfTest() {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  bootAttempts++;
+  prefs.begin("badge", false);
+  bootAttempts = prefs.getUInt("bootAttempts", 0) + 1;
+  prefs.putUInt("bootAttempts", bootAttempts);
   Serial.printf("\n[badge] boot, reset reason %d (9 = brownout), attempt %lu\n",
                 (int)esp_reset_reason(), (unsigned long)bootAttempts);
 
@@ -360,11 +395,16 @@ void loop() {
                   isConductor ? "CONDUCTOR" : "RECEIVER", (unsigned long)fps,
                   shown[FEAT_BASS], shown[FEAT_MID], shown[FEAT_TREBLE],
                   shown[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount);
+    if (txOk || txFail) {
+      Serial.printf("[badge] tx ok %lu fail %lu | boot attempts %lu\n",
+                    (unsigned long)txOk, (unsigned long)txFail, (unsigned long)bootAttempts);
+    }
     if (relayDropped) Serial.printf("[badge] relay queue dropped %lu\n", (unsigned long)relayDropped);
     frames = 0;
     lastReportMs = now;
     if (bootAttempts && now > 3000) {
       bootAttempts = 0;  // rendering steadily; this boot was a good one
+      prefs.putUInt("bootAttempts", 0);
     }
   }
 }
