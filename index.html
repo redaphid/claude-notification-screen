@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chorus Badge — Flasher</title>
+<meta name="description" content="Update your Chorus Badge from the browser. Plug in a USB-C cable, press Connect.">
+<meta name="color-scheme" content="dark">
+<meta property="og:title" content="Chorus Badge">
+<meta property="og:description" content="A little round screen that listens to the room. Update it from your browser.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='14' fill='%230b0b10' stroke='%23ff4d9d' stroke-width='2'/><circle cx='16' cy='16' r='5' fill='%2359f2d6'/></svg>">
+
+<style>
+  :root {
+    --bg:        #08080c;
+    --bg-raised: #101017;
+    --line:      #23232e;
+    --ink:       #eceaf5;
+    --ink-dim:   #9a97ad;
+    --ink-faint: #6a6779;
+    --hot:       #ff4d9d;
+    --cool:      #59f2d6;
+    --warn:      #ffc857;
+    --radius:    14px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    /* two soft pools of light, like the badge is sitting on the page */
+    background-image:
+      radial-gradient(60rem 40rem at 12% -10%, rgba(255,77,157,.14), transparent 60%),
+      radial-gradient(50rem 36rem at 92% 8%,  rgba(89,242,214,.11), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  .wrap {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: clamp(2rem, 7vw, 4.5rem) clamp(1.1rem, 5vw, 2rem) 5rem;
+  }
+
+  /* ---------- hero ---------- */
+
+  .hero { text-align: center; }
+
+  .badge-art {
+    width: clamp(8.5rem, 34vw, 12rem);
+    aspect-ratio: 1;
+    margin: 0 auto 1.75rem;
+    display: block;
+  }
+
+  h1 {
+    font-size: clamp(2rem, 8vw, 3rem);
+    line-height: 1.08;
+    letter-spacing: -0.025em;
+    margin: 0 0 .6rem;
+    font-weight: 660;
+  }
+
+  .tagline {
+    font-size: clamp(1rem, 3.4vw, 1.15rem);
+    color: var(--ink-dim);
+    margin: 0 auto;
+    max-width: 32rem;
+    text-wrap: balance;
+  }
+
+  /* ---------- the one button that matters ---------- */
+
+  .flash-card {
+    margin: 2.75rem 0 0;
+    padding: 1.75rem 1.5rem 1.5rem;
+    background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.015));
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    text-align: center;
+  }
+
+  esp-web-install-button {
+    --esp-tools-button-color: var(--hot);
+    --esp-tools-button-text-color: #14060d;
+    --esp-tools-button-border-radius: 999px;
+  }
+
+  .cta {
+    appearance: none;
+    -webkit-appearance: none;
+    border: 0;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 640;
+    font-size: 1.05rem;
+    letter-spacing: .01em;
+    color: #14060d;
+    background: linear-gradient(180deg, #ff6bae, var(--hot));
+    padding: .85rem 2.4rem;
+    border-radius: 999px;
+    box-shadow: 0 0 0 1px rgba(255,77,157,.5), 0 10px 30px -10px rgba(255,77,157,.65);
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .cta:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(255,77,157,.7), 0 14px 34px -10px rgba(255,77,157,.8); }
+  .cta:active { transform: translateY(0); }
+  .cta:focus-visible { outline: 2px solid var(--cool); outline-offset: 3px; }
+
+  .under-button {
+    margin: 1rem 0 0;
+    font-size: .875rem;
+    color: var(--ink-faint);
+  }
+
+  /* fallback slots */
+  .fallback {
+    display: block;
+    padding: 1rem 1.1rem;
+    border: 1px solid rgba(255,200,87,.32);
+    background: rgba(255,200,87,.07);
+    border-radius: 10px;
+    color: var(--ink);
+    font-size: .94rem;
+    text-align: left;
+  }
+  .fallback strong { color: var(--warn); }
+
+  /* The install button stamps install-supported / install-unsupported on itself
+     once the module loads. Keep both notes hidden until then so neither flashes. */
+  .if-supported, .if-unsupported { display: none; }
+  esp-web-install-button[install-supported]   ~ .if-supported   { display: block; }
+  esp-web-install-button[install-unsupported] ~ .if-unsupported { display: block; }
+
+  /* ---------- content ---------- */
+
+  section { margin-top: 3.25rem; }
+
+  h2 {
+    font-size: .78rem;
+    text-transform: uppercase;
+    letter-spacing: .13em;
+    color: var(--cool);
+    font-weight: 620;
+    margin: 0 0 1rem;
+  }
+
+  h3 {
+    font-size: 1rem;
+    margin: 1.6rem 0 .35rem;
+    font-weight: 620;
+  }
+
+  p { margin: 0 0 1rem; }
+
+  a { color: var(--cool); text-decoration-color: rgba(89,242,214,.4); text-underline-offset: 2px; }
+  a:hover { text-decoration-color: var(--cool); }
+
+  ol.steps {
+    counter-reset: s;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  ol.steps > li {
+    counter-increment: s;
+    position: relative;
+    padding: 0 0 1.15rem 3rem;
+    border-left: 1px solid var(--line);
+    margin-left: 1rem;
+  }
+  ol.steps > li:last-child { border-left-color: transparent; padding-bottom: 0; }
+  ol.steps > li::before {
+    content: counter(s);
+    position: absolute;
+    left: -1rem;
+    top: -.15rem;
+    width: 2rem; height: 2rem;
+    display: grid; place-items: center;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    font-family: var(--mono);
+    font-size: .8rem;
+    color: var(--cool);
+  }
+  ol.steps b { font-weight: 620; }
+  ol.steps .note { display: block; color: var(--ink-dim); font-size: .92rem; }
+
+  .panel {
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1.15rem 1.35rem;
+  }
+
+  details {
+    border-bottom: 1px solid var(--line);
+    padding: .3rem 0;
+  }
+  details:first-of-type { border-top: 1px solid var(--line); }
+  summary {
+    cursor: pointer;
+    padding: .85rem .25rem;
+    font-weight: 560;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: .7rem;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before {
+    content: "+";
+    font-family: var(--mono);
+    color: var(--hot);
+    width: 1rem;
+    flex: none;
+  }
+  details[open] > summary::before { content: "−"; }
+  details > :not(summary) { margin-left: 1.7rem; }
+  details > p:last-child { padding-bottom: .6rem; }
+
+  kbd {
+    font-family: var(--mono);
+    font-size: .82em;
+    background: #1b1b25;
+    border: 1px solid #33333f;
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: .12em .45em;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: .875em;
+    background: rgba(255,255,255,.06);
+    padding: .12em .38em;
+    border-radius: 4px;
+  }
+
+  pre {
+    font-family: var(--mono);
+    font-size: .82rem;
+    background: #0c0c12;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: .9rem 1rem;
+    overflow-x: auto;
+    margin: 0 0 1rem;
+    line-height: 1.55;
+  }
+
+  .gesture {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: .85rem;
+    margin: .2rem 0 1rem;
+  }
+  .gesture span { color: var(--ink-faint); }
+
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--ink-dim); font-weight: 560; font-size: .78rem; text-transform: uppercase; letter-spacing: .07em; }
+  td.mono, th.mono { font-family: var(--mono); }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  footer {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    color: var(--ink-faint);
+    font-size: .84rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1.25rem;
+    justify-content: space-between;
+  }
+  footer .meta { font-family: var(--mono); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <!-- the badge itself: round screen, ring, a little waveform -->
+    <svg class="badge-art" viewBox="0 0 200 200" role="img" aria-label="A round LCD badge showing an audio waveform">
+      <defs>
+        <radialGradient id="glass" cx="38%" cy="26%" r="82%">
+          <stop offset="0%"  stop-color="#1d1d2b"/>
+          <stop offset="100%" stop-color="#07070b"/>
+        </radialGradient>
+        <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%"   stop-color="#ff4d9d"/>
+          <stop offset="55%"  stop-color="#a06bff"/>
+          <stop offset="100%" stop-color="#59f2d6"/>
+        </linearGradient>
+      </defs>
+      <circle cx="100" cy="100" r="92" fill="none" stroke="url(#ring)" stroke-width="4" opacity=".85"/>
+      <circle cx="100" cy="100" r="82" fill="url(#glass)"/>
+      <circle cx="100" cy="100" r="82" fill="none" stroke="#2a2a38" stroke-width="1"/>
+      <g stroke="#59f2d6" stroke-width="5" stroke-linecap="round" opacity=".95">
+        <line x1="58"  y1="100" x2="58"  y2="100"/>
+        <line x1="72"  y1="82"  x2="72"  y2="118"/>
+        <line x1="86"  y1="66"  x2="86"  y2="134"/>
+        <line x1="100" y1="88"  x2="100" y2="112"/>
+        <line x1="114" y1="60"  x2="114" y2="140"/>
+        <line x1="128" y1="84"  x2="128" y2="116"/>
+        <line x1="142" y1="94"  x2="142" y2="106"/>
+      </g>
+      <circle cx="100" cy="100" r="82" fill="none" stroke="#ff4d9d" stroke-width="2" opacity=".22"/>
+    </svg>
+
+    <h1>Chorus Badge</h1>
+    <p class="tagline">
+      A little round screen that listens to the room. Ten of them, all watching the
+      same beat, all drawing the same thing at the same time. This page is how it
+      gets better.
+    </p>
+  </header>
+
+  <div class="flash-card">
+    <esp-web-install-button manifest="./manifest.json">
+      <button class="cta" slot="activate">Connect &amp; flash</button>
+
+      <span class="fallback" slot="unsupported">
+        <strong>This browser can&rsquo;t talk to USB devices.</strong>
+        Flashing needs WebSerial, which only <b>Chrome</b> or <b>Edge</b> on a desktop
+        computer have. Firefox and Safari don&rsquo;t support it, and neither does any
+        browser on iPhone or iPad. Open this page in Chrome and the button will appear.
+      </span>
+
+      <span class="fallback" slot="not-allowed">
+        <strong>This page needs to be served over HTTPS.</strong>
+        Browsers only allow USB access from a secure origin (or from
+        <code>localhost</code>). If you got here over plain <code>http://</code>, try the
+        <code>https://</code> version of the same address.
+      </span>
+    </esp-web-install-button>
+
+    <p class="under-button if-supported">
+      Plug the badge in with a <b>USB-C data cable</b>, press the button, and pick the
+      port that appears. Takes about a minute.
+    </p>
+    <p class="under-button if-unsupported">
+      Everything below still applies &mdash; you just need Chrome or Edge to run it.
+    </p>
+    <p class="under-button meta" id="fw-meta" hidden></p>
+  </div>
+
+  <section>
+    <h2>What you&rsquo;re holding</h2>
+    <p>
+      An ESP32-S3 with a 1.28&Prime; round colour display. It has no buttons you need,
+      no app, and no account. It wakes up, finds the other badges over a direct
+      radio link (ESP-NOW &mdash; no wifi, no router, no internet), and they agree on
+      what the music is doing. Then they all draw it.
+    </p>
+    <p>
+      It runs off USB power or a small battery. If it ever stops doing anything
+      interesting, come back to this page and give it a new brain.
+    </p>
+  </section>
+
+  <section>
+    <h2>Flashing it</h2>
+    <ol class="steps">
+      <li>
+        <b>Use Chrome or Edge</b>, on a laptop or desktop.
+        <span class="note">Firefox and Safari can&rsquo;t do this. Phones and tablets can&rsquo;t either.</span>
+      </li>
+      <li>
+        <b>Plug the badge into your computer</b> with a USB-C cable.
+        <span class="note">It has to be a <em>data</em> cable. Plenty of USB-C cables only carry power &mdash; those look identical and will silently do nothing.</span>
+      </li>
+      <li>
+        <b>Press <span style="color:var(--hot)">Connect &amp; flash</span></b> and choose the
+        badge from the list your browser shows.
+        <span class="note">It usually shows up as a USB serial device. If there&rsquo;s only one entry, that&rsquo;s it.</span>
+      </li>
+      <li>
+        <b>Wait.</b> The screen may go dark while it writes. Don&rsquo;t unplug it.
+        <span class="note">When it finishes, the badge restarts on its own and the display comes back.</span>
+      </li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>If the board doesn&rsquo;t show up</h2>
+
+    <div class="panel">
+      <h3 style="margin-top:0">The recovery gesture</h3>
+      <p style="margin-bottom:.6rem">
+        There are two tiny buttons on the board, <b>BOOT</b> and <b>RESET</b>. This
+        sequence forces the chip into download mode, where it will always accept a
+        flash even if the firmware on it is completely broken:
+      </p>
+      <p class="gesture">
+        <kbd>hold BOOT</kbd> <span>&rarr;</span>
+        <kbd>tap RESET</kbd> <span>&rarr;</span>
+        <kbd>release BOOT</kbd>
+      </p>
+      <p style="margin-bottom:0">
+        Do that with the cable plugged in, then press <b>Connect &amp; flash</b> again.
+        The port will reappear. This is the fix for almost everything.
+      </p>
+    </div>
+
+    <details>
+      <summary>No ports appear at all in the browser&rsquo;s picker</summary>
+      <p>
+        Nine times out of ten this is the cable. Swap it for one you know moves data
+        (the one that came with a phone or a hard drive, not a charger-only cable) and
+        try a different USB port &mdash; ideally one directly on the machine, not through
+        a hub or a dock.
+      </p>
+      <p>
+        If you&rsquo;re on Windows and still nothing, you may need the USB-serial driver
+        for the board&rsquo;s bridge chip. Look in Device Manager for an unknown device
+        while the badge is plugged in; the name it shows tells you which driver
+        (<code>CH34x</code> or <code>CP210x</code>) to install.
+      </p>
+    </details>
+
+    <details>
+      <summary>The port appears but connecting fails or times out</summary>
+      <p>
+        Something else already has the port open &mdash; a serial monitor, the Arduino
+        IDE, PlatformIO, a terminal running <code>screen</code>. Close it and retry.
+      </p>
+      <p>Otherwise: do the recovery gesture above, then connect without unplugging.</p>
+    </details>
+
+    <details>
+      <summary>It flashed, but the screen stays dark</summary>
+      <p>
+        Give it ten seconds &mdash; the first boot after a flash sets up the display and
+        can be slow. If it&rsquo;s still dark, unplug and plug it back in.
+      </p>
+      <p>
+        If it&rsquo;s dark every time, flash it again and choose <b>Erase device</b> when
+        the installer offers. That wipes leftover settings from the previous firmware,
+        which occasionally confuse a fresh build.
+      </p>
+    </details>
+
+    <details>
+      <summary>It works, but it isn&rsquo;t syncing with the other badges</summary>
+      <p>
+        All the badges need to be on the same firmware version to agree on the
+        protocol. Flash them all from this page, then power-cycle them together.
+        They find each other in a few seconds &mdash; there is nothing to pair.
+      </p>
+    </details>
+
+    <details>
+      <summary>I&rsquo;d rather do this from a terminal</summary>
+      <p>
+        Each release ships a single merged image alongside the split parts. With
+        <a href="https://docs.espressif.com/projects/esptool/en/latest/esp32s3/">esptool</a>
+        installed:
+      </p>
+      <pre>esptool.py --chip esp32s3 --port /dev/ttyACM0 \
+  write_flash 0x0 merged.bin</pre>
+      <p>
+        The individual parts and their offsets are listed below if you&rsquo;d rather
+        flash them separately, and <a href="./manifest.json">manifest.json</a> is the
+        machine-readable version of the same thing.
+      </p>
+    </details>
+  </section>
+
+  <section>
+    <h2>Flash layout</h2>
+    <p>
+      For the curious and for anyone rebuilding this. These are ESP32-S3 offsets &mdash;
+      note the bootloader sits at <code>0x0</code>, not at <code>0x1000</code> the way it
+      does on the original ESP32.
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th class="mono">offset</th><th>image</th><th>what it is</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">0x0000</td>  <td class="mono">bootloader.bin</td> <td>second-stage bootloader</td></tr>
+          <tr><td class="mono">0x8000</td>  <td class="mono">partitions.bin</td> <td>partition table</td></tr>
+          <tr><td class="mono">0xe000</td>  <td class="mono">boot_app0.bin</td>  <td>OTA selector &mdash; points at app0</td></tr>
+          <tr><td class="mono">0x10000</td> <td class="mono">firmware.bin</td>   <td>the badge itself</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <span>Made to be given away. Take it apart.</span>
+    <span class="meta" id="fw-footer">&mdash;</span>
+  </footer>
+
+</div>
+
+<script type="module" src="https://cdn.jsdelivr.net/npm/esp-web-tools@10.4.0/dist/web/install-button.js"></script>
+
+<script>
+  // Show which build this page is serving. Purely informational — the install
+  // button reads the manifest itself.
+  fetch("./manifest.json", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.status))))
+    .then((m) => {
+      const label = `${m.name} · ${m.version}`;
+      const meta = document.getElementById("fw-meta");
+      meta.textContent = `Currently serving ${label}`;
+      meta.hidden = false;
+      document.getElementById("fw-footer").textContent = label;
+    })
+    .catch(() => {
+      document.getElementById("fw-footer").textContent = "no build staged";
+    });
+</script>
+</body>
+</html>
