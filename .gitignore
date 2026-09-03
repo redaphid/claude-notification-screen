@@ -2,5 +2,6 @@
 backups/
 .claude/
 outputs/
+harness/build/
 web/firmware/
 web/manifest.json
