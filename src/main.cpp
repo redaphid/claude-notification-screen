@@ -14,6 +14,7 @@
 
 #include "chorus_packet.h"
 #include "display.h"
+#include "effects.h"
 
 static RoundBadgeDisplay display;
 static LGFX_Sprite canvas(&display);
@@ -36,6 +37,7 @@ static uint16_t rxLastSeq = 0;
 static bool rxSeen = false;
 static uint32_t rxCount = 0;
 static uint32_t relayCount = 0;
+static uint8_t rxShader = 0;
 
 // Smoothed values actually handed to the visual. Asymmetric on purpose: fast
 // attack so a kick lands now, slow release so a dropped packet reads as a slow
@@ -49,124 +51,26 @@ static ChorusPacket relayQueue[RELAY_QUEUE_LEN];
 static volatile uint8_t relayHead = 0, relayTail = 0;
 static uint32_t relayDropped = 0;
 
-static float smoothed[FEAT_COUNT] = {0, 0, 0, 0};
-static constexpr float ATTACK = 0.65f;
-static constexpr float RELEASE = 0.12f;
+// Values handed to the visual. Deliberately NOT smoothed: the conductor already
+// ships designed attack-decay envelopes, and filtering them again here would
+// reintroduce exactly the lag that shaping them was meant to remove. The only
+// time-based term is `presence`, which fades a badge out when it stops hearing
+// a conductor -- a designed release, not a filter.
+static float shown[FEAT_COUNT] = {0, 0, 0, 0};
+static float presence = 0.0f;
 
-// --- plasma (bring-up visual) -------------------------------------------
-// Temporary: proves the render path and the frame budget on real hardware.
-// The visuals stream is porting the real effects against effects/effect.h;
-// this gets swapped for those.
-static uint8_t sinTab[256];
-static uint8_t *radTab = nullptr;
-static uint16_t palette[256];
-static int16_t rowStart[SCREEN_H], rowEnd[SCREEN_H];
-static uint8_t colTerm[SCREEN_W], rowTerm[SCREEN_H];
+// --- visuals ----------------------------------------------------------
+// Effects live in effects/, compile unchanged for the desktop harness, and are
+// indexed by the packet's shader byte so "everyone switch to 3" needs no table
+// here. The temporary inline plasma this replaced was only ever a proof that
+// the render path worked.
+static uint8_t activeShader = 0;
 
-static inline uint16_t rgbToSprite(uint8_t r, uint8_t g, uint8_t b) {
-  uint16_t c = (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
-  return (uint16_t)((c >> 8) | (c << 8));  // LovyanGFX sprites store swapped 565
-}
-
-static void plasmaInit() {
-  for (int i = 0; i < 256; i++) {
-    float s = sinf((float)i * 2.0f * (float)M_PI / 256.0f);
-    sinTab[i] = (uint8_t)((s * 0.5f + 0.5f) * 85.0f);  // three terms sum to <= 255
+static void effectsInit() {
+  for (int i = 0; i < effects_count; i++) {
+    if (effects_all[i]->init) effects_all[i]->init();
   }
-
-  radTab = (uint8_t *)ps_malloc(SCREEN_W * SCREEN_H);
-  if (!radTab) {
-    radTab = (uint8_t *)malloc(SCREEN_W * SCREEN_H);
-    Serial.println(radTab ? "[badge] radial LUT in internal RAM (no PSRAM)"
-                          : "[badge] radial LUT alloc FAILED, plasma will be flat");
-  } else {
-    Serial.println("[badge] radial LUT in PSRAM");
-  }
-
-  for (int y = 0; y < SCREEN_H; y++) {
-    float dy = (float)y - 119.5f;
-    float half = sqrtf(fmaxf(0.0f, 120.0f * 120.0f - dy * dy));
-    rowStart[y] = (int16_t)ceilf(119.5f - half);
-    rowEnd[y] = (int16_t)floorf(119.5f + half);
-    if (rowStart[y] < 0) rowStart[y] = 0;
-    if (rowEnd[y] > SCREEN_W - 1) rowEnd[y] = SCREEN_W - 1;
-    if (radTab) {
-      for (int x = 0; x < SCREEN_W; x++) {
-        float dx = (float)x - 119.5f;
-        radTab[y * SCREEN_W + x] = (uint8_t)(sqrtf(dx * dx + dy * dy) * 2.0f);
-      }
-    }
-  }
-}
-
-// Rebuilt once per frame -- 256 iterations instead of 57600, so brightness and
-// palette rotation are effectively free.
-static void buildPalette(uint8_t hueOffset, float brightness) {
-  if (brightness < 0.0f) brightness = 0.0f;
-  if (brightness > 1.0f) brightness = 1.0f;
-  const int v = (int)(brightness * 255.0f);
-  for (int i = 0; i < 256; i++) {
-    int h = (i + hueOffset) & 0xFF;
-    int region = h / 43;
-    int rem = (h - region * 43) * 6;
-    int p = 0;
-    int q = (v * (255 - rem)) >> 8;
-    int t = (v * rem) >> 8;
-    int r, g, b;
-    switch (region) {
-      case 0:  r = v; g = t; b = p; break;
-      case 1:  r = q; g = v; b = p; break;
-      case 2:  r = p; g = v; b = t; break;
-      case 3:  r = p; g = q; b = v; break;
-      case 4:  r = t; g = p; b = v; break;
-      default: r = v; g = p; b = q; break;
-    }
-    palette[i] = rgbToSprite((uint8_t)r, (uint8_t)g, (uint8_t)b);
-  }
-}
-
-static void plasmaRender(uint16_t *out) {
-  // Phase accumulators rather than phases derived from millis(): when the music
-  // speeds the field up, it accelerates instead of jumping.
-  static float accX = 0, accY = 0, accR = 0, accHue = 0;
-  const float bass = smoothed[FEAT_BASS];
-  const float mid = smoothed[FEAT_MID];
-  const float treble = smoothed[FEAT_TREBLE];
-  const float energy = smoothed[FEAT_ENERGY];
-
-  accX += 0.8f + energy * 2.5f;
-  accY += 0.6f + mid * 2.0f;
-  accR += 1.2f + bass * 4.0f;
-  accHue += 0.35f + treble * 3.0f;
-  if (accX > 65536.0f) accX -= 65536.0f;
-  if (accY > 65536.0f) accY -= 65536.0f;
-  if (accR > 65536.0f) accR -= 65536.0f;
-  if (accHue > 65536.0f) accHue -= 65536.0f;
-
-  buildPalette((uint8_t)accHue, 0.35f + 0.65f * bass);
-
-  const uint8_t fx = (uint8_t)(2 + (int)(bass * 3.0f));
-  const uint8_t fy = (uint8_t)(2 + (int)(mid * 3.0f));
-  const uint8_t phX = (uint8_t)accX;
-  const uint8_t phY = (uint8_t)accY;
-  const uint8_t phR = (uint8_t)accR;
-
-  for (int x = 0; x < SCREEN_W; x++) colTerm[x] = sinTab[(uint8_t)(x * fx + phX)];
-  for (int y = 0; y < SCREEN_H; y++) rowTerm[y] = sinTab[(uint8_t)(y * fy + phY)];
-
-  for (int y = 0; y < SCREEN_H; y++) {
-    const int x0 = rowStart[y], x1 = rowEnd[y];
-    uint16_t *dst = out + y * SCREEN_W + x0;
-    const uint8_t ry = rowTerm[y];
-    if (radTab) {
-      const uint8_t *rad = radTab + y * SCREEN_W + x0;
-      for (int x = x0; x <= x1; x++) {
-        *dst++ = palette[(uint8_t)(colTerm[x] + ry + sinTab[(uint8_t)(*rad++ + phR)])];
-      }
-    } else {
-      for (int x = x0; x <= x1; x++) *dst++ = palette[(uint8_t)(colTerm[x] + ry)];
-    }
-  }
+  Serial.printf("[badge] %d effects registered\n", effects_count);
 }
 
 // --- ESP-NOW -------------------------------------------------------------
@@ -187,6 +91,7 @@ static void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
     rxLastMs = millis();
     rxCount++;
     for (int i = 0; i < FEAT_COUNT; i++) rxFeatures[i] = pkt.features[i];
+    rxShader = pkt.shader;
   }
   portEXIT_CRITICAL(&featureMux);
   if (!fresh) return;  // already relayed this one down another path
@@ -288,7 +193,7 @@ static void selfTest() {
   // blitted. If this card is red the sprite byte order is right; if it comes
   // out blue, rgbToSprite() needs its swap removed.
   uint16_t *buf = (uint16_t *)canvas.getBuffer();
-  const uint16_t red = rgbToSprite(255, 0, 0);
+  const uint16_t red = effect_rgb565(255, 0, 0);
   for (int i = 0; i < SCREEN_W * SCREEN_H; i++) buf[i] = red;
   canvas.setTextDatum(middle_center);
   canvas.setTextSize(2);
@@ -322,7 +227,7 @@ void setup() {
 
   selfTest();
   canvas.fillSprite(0);  // plasma only writes inside the circle; clear the rest
-  plasmaInit();
+  effectsInit();
   radioUp = espNowInit();
   if (!radioUp) {
     // A badge with no radio still has a screen. It renders its own idle
@@ -342,6 +247,7 @@ void loop() {
   static uint32_t lastSendMs = 0;
   static uint16_t seq = 0;
   float target[FEAT_COUNT] = {0, 0, 0, 0};
+  bool heard = false;
 
   if (isConductor) {
     mockDjFeatures(now, target);
@@ -362,13 +268,12 @@ void loop() {
     portENTER_CRITICAL(&featureMux);
     for (int i = 0; i < FEAT_COUNT; i++) target[i] = rxFeatures[i];
     lastMs = rxLastMs;
+    activeShader = rxShader;  // "everyone switch to 3"
     portEXIT_CRITICAL(&featureMux);
 
     // No conductor in earshot: decay toward stillness rather than freezing on
     // the last packet, so a badge that walks out of range exhales.
-    if (!rxSeen || (now - lastMs) > FEATURE_STALE_MS) {
-      for (int i = 0; i < FEAT_COUNT; i++) target[i] = 0.0f;
-    }
+    heard = rxSeen && (now - lastMs) <= FEATURE_STALE_MS;
   }
 
   // Drain queued relays here, in loop context, where esp_now_send() is safe.
@@ -378,12 +283,28 @@ void loop() {
     relayCount++;
   }
 
-  for (int i = 0; i < FEAT_COUNT; i++) {
-    const float a = (target[i] > smoothed[i]) ? ATTACK : RELEASE;
-    smoothed[i] += (target[i] - smoothed[i]) * a;
-  }
+  // Presence, not smoothing: a badge that can still hear the conductor shows
+  // what it was told; one that has walked out of range exhales over ~600ms.
+  const bool hearing = isConductor || !radioUp || heard;
+  presence += ((hearing ? 1.0f : 0.0f) - presence) * 0.05f;
+  for (int i = 0; i < FEAT_COUNT; i++) shown[i] = target[i] * presence;
 
-  plasmaRender((uint16_t *)canvas.getBuffer());
+  // The conductor expresses an onset as a single-packet jump in energy, then
+  // releases on a designed curve, so that jump is the beat and the value that
+  // follows it is already the envelope.
+  static float prevEnergy = 0.0f;
+  EffectInput in;
+  in.bass = shown[FEAT_BASS];
+  in.mid = shown[FEAT_MID];
+  in.treble = shown[FEAT_TREBLE];
+  in.energy = shown[FEAT_ENERGY];
+  in.time_ms = now;
+  in.beat = (shown[FEAT_ENERGY] - prevEnergy) > 0.25f ? 1 : 0;
+  in.beat_env = shown[FEAT_ENERGY];
+  prevEnergy = shown[FEAT_ENERGY];
+
+  const Effect *effect = effects_by_index(activeShader);
+  effect->render((uint16_t *)canvas.getBuffer(), &in);
 
   // Bring-up HUD. Cheap, and it makes a photograph of the screen into a
   // readable status report.
@@ -395,6 +316,7 @@ void loop() {
   char hud[40];
   snprintf(hud, sizeof(hud), "%lu fps  rx:%lu", (unsigned long)fps, (unsigned long)rxCount);
   canvas.drawString(hud, SCREEN_W / 2, 180);
+  canvas.drawString(effects_by_index(activeShader)->name, SCREEN_W / 2, 200);
 
   canvas.pushSprite(0, 0);
 
@@ -404,8 +326,8 @@ void loop() {
     fps = frames * 1000 / (now - lastReportMs);
     Serial.printf("[badge] %s %lu fps | bass %.2f mid %.2f treble %.2f energy %.2f | rx %lu relay %lu\n",
                   isConductor ? "CONDUCTOR" : "RECEIVER", (unsigned long)fps,
-                  smoothed[FEAT_BASS], smoothed[FEAT_MID], smoothed[FEAT_TREBLE],
-                  smoothed[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount);
+                  shown[FEAT_BASS], shown[FEAT_MID], shown[FEAT_TREBLE],
+                  shown[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount);
     if (relayDropped) Serial.printf("[badge] relay queue dropped %lu\n", (unsigned long)relayDropped);
     frames = 0;
     lastReportMs = now;
