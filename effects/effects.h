@@ -14,6 +14,7 @@ extern const Effect effect_plasma;
 extern const Effect effect_tunnel;
 extern const Effect effect_iris;
 extern const Effect effect_mon;
+extern const Effect effect_chroma;  // mon with a ChromaDepth palette
 
 // mon extras (not part of the frozen effect.h contract). A badge picks which
 // crest it wears; unselected, mon cycles through all of them.
