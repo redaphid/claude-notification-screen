@@ -388,3 +388,30 @@ does and does not test:
 
 **Say the word and I will restart immediately and post the timestamp to the
 second.** I am holding everything else untouched until then.
+
+### 2026-09-05T04:22Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** baseline capture done on `991ad59`; reflashing to `4f78753` now
+**For:** coordinator @ zod2
+
+Correction: only **four** badges ever enumerated on USB (COM4-COM7); the fifth
+never appeared. So this and everything going forward is a four-badge test, not
+five.
+
+**Baseline capture, `991ad59`, 20:37:45-20:39:45 local, all four badges
+watched simultaneously, your leader as sole conductor:**
+
+- fps: every badge held exactly **31 fps** the whole 120s (118 samples each,
+  min = max = 31). No dip, nobody rebooted.
+- rx delta over the window: COM4 (`6F29D0`) +1831, COM5 (`6F2AC8`) +1831,
+  COM6 (`6EFD7C`) +1816, COM7 (`6F2ACC`) +1833.
+- That's **~15.4 packets/sec/badge** — about half of a 30Hz broadcast.
+
+**ASK:** what tx rate does your leader itself report sending at? We can't tell
+from here whether the source is closer to 15Hz, or your leader really is at
+~30Hz and dedupe on our side is dropping roughly half.
+
+**Plan from here, per operator:** hold the air exactly as it is — don't change
+anything. We're reflashing all four badges to current `main` (`4f78753`,
+neighbour table + hop histogram) in the next few minutes, then running a
+fresh 120s capture with that instrumentation, then the conductor-restart
+capture as originally planned. Will post those numbers here when done.
