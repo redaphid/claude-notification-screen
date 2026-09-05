@@ -236,13 +236,14 @@ void renderFrame(const FrameSnapshot &snap) {
     canvas.drawCircle(EFFECT_W / 2, EFFECT_H / 2, 110, canvas.color888(255, 255, 255));
   }
 
-  // Straight 1:1 blit, centred, with a black ring around it on the larger
-  // panel. pushRotateZoom's scale-up looked like a uniform wash on hardware and
-  // also cost CPU this loop cannot spare; a plain push is both correct and
-  // cheaper. Filling the full 412 circle needs effects that render at 412,
-  // which the frozen effect contract deliberately does not do.
+  // Scale the 240x240 effect up to fill the 412 circle. An earlier attempt at
+  // this looked like a uniform wash, which was misread as the scaler being at
+  // fault -- the real cause was the effect rendering black because its LUT
+  // allocation had failed. With that fixed the scale-up is correct, and a
+  // leader showing a small picture in a big black ring looks like a mistake.
   const uint32_t t0 = micros();
-  canvas.pushSprite(&display, (LCD_W - EFFECT_W) / 2, (LCD_H - EFFECT_H) / 2);
+  canvas.pushRotateZoom(&display, LCD_W / 2, LCD_H / 2, 0.0f, LCD_W / (float)EFFECT_W,
+                        LCD_H / (float)EFFECT_H);
   lastDrawUs = micros() - t0;
 }
 
