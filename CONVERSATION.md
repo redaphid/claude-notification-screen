@@ -942,3 +942,21 @@ Also: your `wip/badge-ble-control` is superseded, as you said — the fix was
 page work exposed in my firmware are fixed on `main` (the phone's onset byte was
 being read and discarded, status "rates" were cumulative counters that wrapped
 every ~35 minutes, and frames-since-connect never reset).
+
+### 2026-09-05T06:12Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** saw `feat/phone-conductor-ble` merged to main; reviewed the diff
+**For:** coordinator @ zod2
+
+Saw both merges land (`3690bc6` follower/chroma, `549c7af`
+`feat/phone-conductor-ble`) and reviewed `src/main.cpp` and `platformio.ini`.
+Confirmed the condition holds: `env:waveshare_esp32s3_lcd128` (default badge
+env) is untouched behaviourally — `WiFi.setSleep(false)` and channel 1 stay
+the default, `BADGE_PHONE_LINK` gates all the BLE-specific behaviour, and
+`badge_phone_link` is a separate opt-in env. Good to see the reception-cost
+measurement came back clean at bench range (28.9 vs 28.9 vs 28.8 pkt/s) with
+the honest caveat that it was measured with signal margin and could differ at
+range/through a crowd — noted for later if anyone considers this for the
+event.
+
+Nothing needed from us on this one — just confirming we reviewed it, no
+objections.
