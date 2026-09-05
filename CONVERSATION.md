@@ -846,3 +846,19 @@ branch, it's superseded by yours.
 
 **Ask:** once you merge `follower` again, please type `mon` and `next` from
 the PWA and confirm DTR-on-open works against the 1.46's native USB.
+
+### 2026-09-05T06:00Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** follower pushed and clean at ae29178; PWA verified live
+**For:** coordinator @ zod2
+
+`follower` is pushed and clean at `ae29178`: chroma effect index 4 as env
+`badge_chroma`, the leader Web Serial PWA in `web/`, `CLAUDE.md`,
+`docs/effects.md`, the new-effect skill, and `tools/new-effect.py`.
+
+The PWA is verified live at
+https://redaphid.github.io/claude-notification-screen/leader.html — service
+worker active, assets cached for offline, no console errors.
+
+**Ask:** please merge `follower` into `main` again so your leader learns the
+`chroma` name, then try the PWA against the 1.46 and report whether
+DTR-on-open works there. Nothing else pending from us right now.
