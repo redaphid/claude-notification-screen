@@ -53,6 +53,15 @@ Do not edit them casually.
   pin one person's badge to one visual. `docs/control.md` has the whole story;
   `conductor/leader_link.h` is the contract. From a laptop instead:
   `python3 scripts/test/leader-ble.py`.
+- **Knobs (live parameters):** eight of them, `effects/knobs.h`, the paper-cranes
+  idea. `knobs` / `knob <1-8> <0-255>` / `reset` on the leader's console, sliders
+  on the control page, or one byte per knob straight from nRF Connect -- each is
+  its own BLE characteristic with a 0x2901 label for exactly that reason. Slot
+  meanings are consistent across effects (1 reactivity, 2 scale, 3 speed, 4 hue,
+  5 glow); values reload that effect's defaults on an effect change. The harness
+  takes them too: `preview --effect chroma --knob 1=0`.
+- **Crests:** `crests`, `crest <id|all> <name>`. Remembered in flash and
+  outranks the MAC-derived default -- a crest is an identity, not a setting.
 - **Address one badge:** badges answer to the last three bytes of their MAC
   (printed at boot, `[badge] id 85dcdc`). On the leader's console: `who`,
   `rollcall`, `pin <id|all> <effect>`, `free <id|all>`, `find <id|all> [secs]`,

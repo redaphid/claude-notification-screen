@@ -28,6 +28,7 @@
 #include "effect_common.h"
 #include "effects.h"
 #include "mon_data.h"
+#include "knobs.h"
 
 #include <math.h>
 #include <string.h>
@@ -118,7 +119,13 @@ static void build_palette(uint8_t hue, float energy, float treble, float env) {
 static int s_chroma = 0;
 
 static void build_palette_chroma(float energy, float treble, float env) {
-  const float reach = 6.0f + 10.0f * energy + 4.0f * env;  // px over which the surround recedes
+  // knob 5 sets how much of the wheel the height map spans -- a shallow ramp
+  // keeps the crest and its surround close together in depth, a deep one
+  // throws the background right back. knob 4 rotates where the ramp starts,
+  // which through the glasses reads as moving the whole scene toward or away.
+  const float depth = 0.4f + 1.6f * knob(4);
+  const float hue0 = knob(3) * 0.35f;
+  const float reach = (6.0f + 10.0f * energy + 4.0f * env) * depth;  // px the surround recedes
   const float rimw = 1.0f + 2.0f * treble;
   const float push = 0.22f * env;                          // nearer on the beat
   for (int i = 0; i < 256; ++i) {
@@ -140,7 +147,9 @@ static void build_palette_chroma(float energy, float treble, float env) {
     z -= push;
     if (z < 0.0f) z = 0.0f;
     int r, g, b;
-    hue_rgb((uint8_t)(z * 192.0f), 0, &r, &g, &b);  // 0 red .. 192 violet on the wheel
+    float zh = hue0 + z;
+    if (zh > 1.0f) zh = 1.0f;
+    hue_rgb((uint8_t)(zh * 192.0f), 0, &r, &g, &b);  // 0 red .. 192 violet on the wheel
     s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8((int)(r * v)),
                              (uint8_t)effect_clamp_u8((int)(g * v)),
                              (uint8_t)effect_clamp_u8((int)(b * v)));
@@ -168,24 +177,39 @@ static void mon_render(uint16_t *out, const EffectInput *in) {
   const float treble = effect_clamp01(in->treble);
   const float env = effect_clamp01(in->beat_env);
 
+  // ---- knobs -------------------------------------------------------------
+  // knob 1 is how much the music is allowed to move the crest at all. At 0 the
+  // silhouette is geometrically still and only its colour answers the room --
+  // which is what the paper-cranes work on this artwork concluded it should
+  // do, so that the crest stays nameable. At 1 it is the old swelling
+  // behaviour. Nobody has to be right about this in the abstract; it is a knob.
+  const float react = knob(0) * 2.0f;   // 0..2, so 128 is roughly as it shipped
+  const float sizek = 0.6f + knob(1);   // 0.6..1.6 of the base radius
+  const float spink = knob(2) * 2.0f;
+  const float kickk = knob(5) * 2.0f;
+
   // ---- motion: slow turn, faster with mid, a discrete kick on the onset ----
-  if (in->beat) s_kick += 2.4f;
+  if (in->beat) s_kick += 2.4f * kickk;
   s_kick *= expf(-(float)dt / 260.0f);
-  s_theta += (0.12f + 0.60f * mid + s_kick) * (float)dt * 0.001f;
+  s_theta += (0.12f * spink + 0.60f * mid * spink * react * 0.5f + s_kick) * (float)dt * 0.001f;
   if (s_theta > 6.2831853f) s_theta -= 6.2831853f;
 
-  // ---- size: the crest fills screen_r pixels, breathing with bass ---------
-  // ChromaDepth mode zooms hard: the crest swells from small and far to
-  // overflowing the disc with the music, and the depth ramp does the rest.
-  const float screen_r = s_chroma
-      ? 58.0f + 42.0f * energy + 18.0f * bass + 16.0f * env
-      : 86.0f + 12.0f * bass + 10.0f * env;
+  // ---- size: the crest fills screen_r pixels ------------------------------
+  // The base radius is the knob; everything the music adds to it is scaled by
+  // reactivity, so turning that down does not also shrink the crest.
+  const float base_r = (s_chroma ? 96.0f : 92.0f) * sizek;
+  const float swell = s_chroma
+      ? (42.0f * energy + 18.0f * bass + 16.0f * env)
+      : (12.0f * bass + 10.0f * env);
+  // chroma's old base was 58px with the swell riding on top; keep that shape at
+  // full reactivity by pulling the base down as the swell is allowed to grow.
+  const float screen_r = base_r - (s_chroma ? 38.0f : 6.0f) * react * 0.5f + swell * react * 0.5f;
   const float k = (float)mon_radius[v] / screen_r;  // motif px per screen px
   const int32_t cs = (int32_t)lrintf(cosf(s_theta) * k * 4096.0f);
   const int32_t sn = (int32_t)lrintf(sinf(s_theta) * k * 4096.0f);
 
   if (s_chroma) build_palette_chroma(energy, treble, env);
-  else build_palette(MON_HUE[v], energy, treble, env);
+  else build_palette((uint8_t)(MON_HUE[v] + (int)(knob(3) * 255.0f)), energy, treble, env);
 
   // ---- pixels -------------------------------------------------------------
   const uint8_t *sdf = mon_sdf[v];

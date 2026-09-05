@@ -25,6 +25,7 @@
 // is driven off beat/beat_env, which have a deliberate attack and decay.
 // Driving the sharp things off raw treble instead makes the iris shudder.
 #include "effect_common.h"
+#include "knobs.h"
 
 #include <string.h>
 
@@ -94,13 +95,17 @@ static void iris_render(uint16_t *out, const EffectInput *in) {
   const float treble = effect_clamp01(in->treble);
   const float env = effect_clamp01(in->beat_env);
 
-  s_ringphase += (uint16_t)((float)dt * (3.0f + 22.0f * energy));
-  s_swirl += (uint16_t)((float)dt * (2.0f + 26.0f * mid));
+  // Shared knob meanings, see knobs.h.
+  const float react = knob(0) * 2.0f;
+  const float speedk = knob(2) * 2.0f;
+
+  s_ringphase += (uint16_t)((float)dt * (3.0f * speedk + 22.0f * energy * react));
+  s_swirl += (uint16_t)((float)dt * (2.0f * speedk + 26.0f * mid * react));
   s_noise_x = (uint8_t)(s_noise_x + (dt > 20u ? 1u : 0u));
   s_noise_y = (uint8_t)(s_noise_y + (dt > 40u ? 1u : 0u));
 
   if (in->beat) {
-    s_hue = (uint8_t)(s_hue + 23u);
+    s_hue = (uint8_t)(s_hue + (uint8_t)(23.0f * react));
     s_beatcount++;
     if ((s_beatcount & 3) == 0) {          // discrete state, every 4th beat
       static const uint8_t blade_cycle[4] = {5, 6, 8, 3};
@@ -180,7 +185,7 @@ static void iris_render(uint16_t *out, const EffectInput *in) {
   // ---- palette ------------------------------------------------------------
   const int gain = effect_clamp_u8((int)(150.0f + 105.0f * (0.35f + 0.40f * energy + 0.45f * env)));
   for (int i = 0; i < 256; ++i) {
-    const uint8_t p = (uint8_t)((i >> 2) + s_hue);
+    const uint8_t p = (uint8_t)((i >> 2) + s_hue + (uint8_t)(knob(3) * 255.0f));
     int r = (effect_sinu(p) * i) >> 8;
     int g = (effect_sinu((uint8_t)(p + 96)) * i) >> 8;
     int b = (effect_sinu((uint8_t)(p + 176)) * i) >> 8;

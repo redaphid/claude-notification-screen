@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "../effects/effects.h"
+#include "../effects/knobs.h"
 #include "chorus_command.h"
 #include "conductor_config.h"
 #include "net_espnow.h"
@@ -18,14 +19,30 @@
 static NimBLEServer *s_server = nullptr;
 static NimBLECharacteristic *s_state = nullptr;
 static NimBLECharacteristic *s_roster = nullptr;
+static NimBLECharacteristic *s_labels = nullptr;
+static NimBLECharacteristic *s_effectChar = nullptr;
+static NimBLECharacteristic *s_knobChar[KNOB_COUNT] = {nullptr};
+static NimBLEDescriptor *s_knobDesc[KNOB_COUNT] = {nullptr};
 static volatile bool s_connected = false;
 
-// One slot is enough. A second press before the loop has drained the first is
-// a person pressing faster than 30Hz, which does not happen; a ring buffer here
-// would be machinery in service of nothing.
+// A short ring, not one slot. Buttons arrive slower than the loop drains, but
+// knobs do not: a slider drag is a stream of writes, and a page restoring a
+// saved look writes eight knobs in a row. One slot would keep only the last of
+// them and silently lose the rest.
 static portMUX_TYPE s_cmdMux = portMUX_INITIALIZER_UNLOCKED;
-static LeaderControlFrame s_pending;
-static volatile bool s_hasPending = false;
+static constexpr int CMD_RING = 16;
+static LeaderControlFrame s_ring[CMD_RING];
+static volatile uint8_t s_ringHead = 0, s_ringTail = 0;
+
+static void queueFrame(const LeaderControlFrame &f) {
+  portENTER_CRITICAL(&s_cmdMux);
+  const uint8_t next = (uint8_t)((s_ringHead + 1) % CMD_RING);
+  if (next != s_ringTail) {
+    s_ring[s_ringHead] = f;
+    s_ringHead = next;
+  }
+  portEXIT_CRITICAL(&s_cmdMux);
+}
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *server, ble_gap_conn_desc *desc) override {
@@ -44,14 +61,39 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   }
 };
 
+// A one-byte write turns into the same LeaderControlFrame the binary
+// characteristic produces, so poking a byte in nRF Connect and tapping the web
+// page take literally the same path through the firmware.
+class ByteCallbacks : public NimBLECharacteristicCallbacks {
+ public:
+  ByteCallbacks(uint8_t op, uint8_t arg0) : _op(op), _arg0(arg0) {}
+  void onWrite(NimBLECharacteristic *c) override {
+    const std::string v = c->getValue();
+    if (v.empty()) return;
+    LeaderControlFrame f = {};
+    f.op = _op;
+    // Knobs carry the knob number in arg0 and the value in arg1; effect and
+    // crest carry their value in arg0 and ignore _arg0.
+    if (_op == LEADER_OP_SET_KNOB) {
+      f.arg0 = _arg0;
+      f.arg1 = (uint8_t)v[0];
+    } else {
+      f.arg0 = (uint8_t)v[0];
+    }
+    queueFrame(f);
+  }
+
+ private:
+  uint8_t _op, _arg0;
+};
+
 class ControlCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *c) override {
     const std::string v = c->getValue();
     if (v.size() < sizeof(LeaderControlFrame)) return;
-    portENTER_CRITICAL(&s_cmdMux);
-    memcpy(&s_pending, v.data(), sizeof(LeaderControlFrame));
-    s_hasPending = true;
-    portEXIT_CRITICAL(&s_cmdMux);
+    LeaderControlFrame f;
+    memcpy(&f, v.data(), sizeof(f));
+    queueFrame(f);
   }
 };
 
@@ -84,12 +126,15 @@ class RosterCallbacks : public NimBLECharacteristicCallbacks {
 };
 
 bool leaderLinkTakeCommand(LeaderControlFrame *out) {
-  if (!s_hasPending) return false;
+  bool got = false;
   portENTER_CRITICAL(&s_cmdMux);
-  *out = s_pending;
-  s_hasPending = false;
+  if (s_ringTail != s_ringHead) {
+    *out = s_ring[s_ringTail];
+    s_ringTail = (uint8_t)((s_ringTail + 1) % CMD_RING);
+    got = true;
+  }
   portEXIT_CRITICAL(&s_cmdMux);
-  return true;
+  return got;
 }
 
 bool leaderLinkConnected() { return s_connected; }
@@ -157,6 +202,53 @@ bool leaderLinkBegin() {
     n->setValue((const uint8_t *)names.data(), names.size());
   }
 
+  // --- the pokeable bytes --------------------------------------------------
+  // Each of these is one byte with a 0x2901 user description, which is what a
+  // generic BLE scanner renders as a label next to an editable value. It is
+  // the difference between "c8a0f210" holding 0x50 and "knob 1 (reactivity)"
+  // holding 80.
+  //
+  // setValue() must be given an explicit pointer and length. NimBLE's
+  // setValue(const T&) template happily accepts a `const char *` and memcpy's
+  // the four bytes of the POINTER into the descriptor, which a scanner then
+  // renders as garbage -- observed exactly that way before this comment
+  // existed, four bytes of "\xb0\x1a\x3f?" where "knob 1" should have been.
+  auto describe = [](NimBLECharacteristic *c, const char *text) {
+    NimBLEDescriptor *d = c->createDescriptor("2901", NIMBLE_PROPERTY::READ, 40);
+    if (d) d->setValue((const uint8_t *)text, strlen(text));
+  };
+
+  s_effectChar = svc->createCharacteristic(
+      LEADER_LINK_EFFECT_UUID,
+      NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+  s_effectChar->setCallbacks(new ByteCallbacks(LEADER_OP_SET_EFFECT, 0));
+  describe(s_effectChar, "effect (index)");
+
+  NimBLECharacteristic *crest =
+      svc->createCharacteristic(LEADER_LINK_CREST_UUID, NIMBLE_PROPERTY::WRITE);
+  crest->setCallbacks(new ByteCallbacks(LEADER_OP_SET_CREST, 0));
+  describe(crest, "crest (index)");
+
+  // The knob descriptions carry the CURRENT effect's label, because that is
+  // what makes them usable in a scanner. They are refreshed on every effect
+  // change -- a scanner already connected will not re-read them, which is why
+  // the labels characteristic exists as well and why the slot meanings in
+  // knobs.h are kept consistent across effects.
+  for (int i = 0; i < KNOB_COUNT; i++) {
+    char uuid[48];
+    snprintf(uuid, sizeof(uuid), LEADER_LINK_KNOB_BASE_UUID, i);
+    s_knobChar[i] = svc->createCharacteristic(
+        uuid, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::NOTIFY);
+    s_knobChar[i]->setCallbacks(new ByteCallbacks(LEADER_OP_SET_KNOB, (uint8_t)i));
+    char label[40];
+    snprintf(label, sizeof(label), "knob %d", i + 1);
+    describe(s_knobChar[i], label);
+    s_knobDesc[i] = s_knobChar[i]->getDescriptorByUUID("2901");
+  }
+
+  s_labels = svc->createCharacteristic(LEADER_LINK_LABELS_UUID,
+                                       NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
+
   svc->start();
 
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
@@ -170,6 +262,48 @@ bool leaderLinkBegin() {
   Serial.printf("[ble] advertising as \"%s\", service %s\n", LEADER_LINK_NAME,
                 LEADER_LINK_SERVICE_UUID);
   return true;
+}
+
+// Called whenever the effect changes, and once at start-up: refreshes the knob
+// values a scanner reads, and the label block the page reads.
+void leaderLinkPublishKnobs(uint8_t shader) {
+  const KnobSpec *ks = effect_knob_specs(shader);
+  for (int i = 0; i < KNOB_COUNT; i++) {
+    if (!s_knobChar[i]) continue;
+    // "knob 3 (spin)" rather than "knob 3", so a scanner shows what the slot
+    // currently means. An app already connected will not re-read this, which
+    // is why knobs.h keeps slot meanings consistent between effects anyway.
+    if (s_knobDesc[i]) {
+      char label[40];
+      if (ks[i].name) snprintf(label, sizeof(label), "knob %d (%s)", i + 1, ks[i].name);
+      else snprintf(label, sizeof(label), "knob %d (unused here)", i + 1);
+      s_knobDesc[i]->setValue((const uint8_t *)label, strlen(label));
+    }
+    const uint8_t v = knob_raw(i);
+    s_knobChar[i]->setValue(&v, 1);
+    if (s_connected) s_knobChar[i]->notify();
+  }
+  if (s_effectChar) {
+    s_effectChar->setValue(&shader, 1);
+    if (s_connected) s_effectChar->notify();
+  }
+  if (s_labels) {
+    // KNOB_COUNT lines of knob label (blank where unused), then "--", then one
+    // line per crest. One read gives a UI everything it needs to label itself.
+    std::string out;
+    const KnobSpec *spec = effect_knob_specs(shader);
+    for (int i = 0; i < KNOB_COUNT; i++) {
+      out += spec[i].name ? spec[i].name : "";
+      out += "\n";
+    }
+    out += "--\n";
+    for (int i = 0; i < mon_variant_count(); i++) {
+      out += mon_variant_name(i);
+      if (i + 1 < mon_variant_count()) out += "\n";
+    }
+    s_labels->setValue((const uint8_t *)out.data(), out.size());
+    if (s_connected) s_labels->notify();
+  }
 }
 
 void leaderLinkPublish(uint8_t shader, uint8_t effectCount, uint8_t badges, bool hearing,

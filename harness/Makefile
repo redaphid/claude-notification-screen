@@ -22,7 +22,7 @@ CFLAGS  ?= -std=c99 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra \
            -Wno-unused-parameter -I$(EFFECTS) -I$(HARNESS)
 LDLIBS  ?= -lm
 
-SRC := $(EFFECTS)/effect_common.c $(EFFECTS)/effects.c $(EFFECTS)/plasma.c \
+SRC := $(EFFECTS)/effect_common.c $(EFFECTS)/effects.c $(EFFECTS)/knobs.c $(EFFECTS)/plasma.c \
        $(EFFECTS)/tunnel.c $(EFFECTS)/iris.c \
        $(EFFECTS)/mon.c $(EFFECTS)/mon_data.c \
        $(HARNESS)/mock_dj.c $(HARNESS)/preview.c
@@ -81,7 +81,7 @@ bench: $(BIN)
 strict:
 	@mkdir -p $(BUILD)
 	$(CC) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O2 -I$(EFFECTS) -fsyntax-only \
-	  $(EFFECTS)/effect_common.c $(EFFECTS)/effects.c \
+	  $(EFFECTS)/effect_common.c $(EFFECTS)/effects.c $(EFFECTS)/knobs.c \
 	  $(EFFECTS)/plasma.c $(EFFECTS)/tunnel.c $(EFFECTS)/iris.c $(EFFECTS)/mon.c $(EFFECTS)/mon_data.c
 	@echo "effects/ are strict C99"
 

@@ -10,6 +10,7 @@
 #include "../effects/effect.h"
 #include "../effects/effects.h"
 #include "../effects/effect_common.h"
+#include "../effects/knobs.h"
 
 namespace {
 
@@ -216,6 +217,7 @@ void renderFrame(const FrameSnapshot &snap) {
   in.beat = beat;
   in.beat_env = snap.beatEnv;
 
+  knobs_follow_effect(s_shader);
   effects_by_index(s_shader)->render((uint16_t *)canvas.getBuffer(), &in);
 
   // The conductor's screen is a monitor, not just a visual: it shows what this

@@ -36,6 +36,28 @@
 // shipped before an effect existed should still label it correctly.
 #define LEADER_LINK_NAMES_UUID "c8a0f204-0451-4000-b000-63726e730001"
 
+// --- pokeable attributes ---------------------------------------------------
+// Everything below is one byte, readable and writable on its own
+// characteristic, each carrying a 0x2901 Characteristic User Description. That
+// is what makes a generic BLE scanner -- nRF Connect, LightBlue -- into a
+// usable control surface: the app shows a name and a value and lets you type a
+// new byte, with no page and no app of ours involved. The binary command
+// characteristic above is for software; these are for fingers.
+//
+// Effect index, 0..effectCount-1. Writing it is the same as typing an effect
+// name on the leader's serial console.
+#define LEADER_LINK_EFFECT_UUID "c8a0f205-0451-4000-b000-63726e730001"
+// Which family crest the whole swarm wears, 0..crestCount-1.
+#define LEADER_LINK_CREST_UUID "c8a0f206-0451-4000-b000-63726e730001"
+// Knobs 1..8, contiguous so a scanner lists them in order. Live parameters,
+// broadcast to every badge as they are turned. See effects/knobs.h.
+#define LEADER_LINK_KNOB_BASE_UUID "c8a0f21%d-0451-4000-b000-63726e730001"
+// Newline-separated, in this order: the current effect's knob labels (always
+// KNOB_COUNT lines, blank where the effect ignores that slot), a "--" line,
+// then the crest names. Read it to label a UI; the page must not hardcode
+// either list.
+#define LEADER_LINK_LABELS_UUID "c8a0f207-0451-4000-b000-63726e730001"
+
 // Advertised name. "Chorus Leader" rather than "Chorus-XXXX" so that in a field
 // with badges advertising too, the one you want is the one you can read.
 #define LEADER_LINK_NAME "Chorus Leader"
@@ -55,6 +77,13 @@ enum LeaderLinkOp : uint8_t {
   LEADER_OP_BADGE_IDENTIFY = 18,
   LEADER_OP_BADGE_BRIGHTNESS = 19,
   LEADER_OP_ROLL_CALL = 20,
+  // arg0 = knob index 0..KNOB_COUNT-1, arg1 = value. Applied to the leader's
+  // own panel and broadcast to every badge, because the point of a knob is
+  // that the swarm changes together.
+  LEADER_OP_SET_KNOB = 21,
+  LEADER_OP_RESET_KNOBS = 22,
+  // arg0 = mon variant. target selects one badge or all of them.
+  LEADER_OP_SET_CREST = 23,
 };
 
 struct __attribute__((packed)) LeaderControlFrame {
@@ -108,6 +137,8 @@ void leaderLinkPublish(uint8_t shader, uint8_t effectCount, uint8_t badges, bool
 // is not a place to call esp_now_send() or walk the effect registry. The main
 // loop drains this. Returns false when there is nothing waiting.
 bool leaderLinkTakeCommand(LeaderControlFrame *out);
+// Push the current knob values and this effect's labels to anything listening.
+void leaderLinkPublishKnobs(uint8_t shader);
 
 #else
 
@@ -118,5 +149,6 @@ static inline bool leaderLinkConnected() { return false; }
 static inline void leaderLinkPublish(uint8_t, uint8_t, uint8_t, bool, uint16_t, uint16_t, uint16_t,
                                      uint8_t, uint8_t) {}
 static inline bool leaderLinkTakeCommand(LeaderControlFrame *) { return false; }
+static inline void leaderLinkPublishKnobs(uint8_t) {}
 
 #endif

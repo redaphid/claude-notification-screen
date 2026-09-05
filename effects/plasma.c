@@ -22,6 +22,7 @@
 //              reads as "on the beat" -- driving hue off raw bass instead
 //              makes the field shudder, which is exactly what we are avoiding.
 #include "effect_common.h"
+#include "knobs.h"
 
 #include <string.h>
 
@@ -60,25 +61,34 @@ static void plasma_render(uint16_t *out, const EffectInput *in) {
   const float treble = effect_clamp01(in->treble);
   const float env = effect_clamp01(in->beat_env);
 
+  // ---- knobs --------------------------------------------------------------
+  // Slot meanings are the shared ones (see knobs.h): 1 how far the music moves
+  // it, 2 how big the pattern is, 3 how fast it runs with no music at all, 4
+  // hue, 5 brightness.
+  const float react = knob(0) * 2.0f;
+  const float scalek = 0.35f + 1.6f * knob(1);
+  const float speedk = knob(2) * 2.0f;
+  const float glowk = 0.35f + 1.3f * knob(4);
+
   // ---- phase advance (Q8.8 angle units per millisecond) -------------------
-  const float flow = 1.0f + 2.2f * mid + 1.4f * env;
+  const float flow = speedk + (2.2f * mid + 1.4f * env) * react;
   s_phx += (uint16_t)((float)dt * 5.5f * flow);
   s_phy += (uint16_t)((float)dt * -4.1f * flow);
-  s_phd += (uint16_t)((float)dt * 3.0f * (1.0f + 2.0f * treble));
-  s_phr += (uint16_t)((float)dt * (2.5f + 9.0f * energy));
+  s_phd += (uint16_t)((float)dt * 3.0f * (speedk + 2.0f * treble * react));
+  s_phr += (uint16_t)((float)dt * (2.5f * speedk + 9.0f * energy * react));
 
   // ---- discrete beat event: recolour, do not drift ------------------------
-  if (in->beat) s_hue = (uint8_t)(s_hue + 37u);
-  s_hue = (uint8_t)(s_hue + (uint8_t)((float)dt * 0.02f * (0.2f + mid)));
+  if (in->beat) s_hue = (uint8_t)(s_hue + (uint8_t)(37.0f * react));
+  s_hue = (uint8_t)(s_hue + (uint8_t)((float)dt * 0.02f * (0.2f * speedk + mid * react)));
 
   // ---- amplitude budget ---------------------------------------------------
   // The four terms always sum to +/-508 so the >>2 below lands exactly in
   // 0..255 with no clamp in the inner loop; only the *split* between terms
   // moves with the audio.
-  int wr = 42 + (int)(85.0f * bass + 110.0f * env);
-  int wx = 105 + (int)(45.0f * mid);
-  int wy = 105 + (int)(45.0f * mid);
-  int wd = 78 + (int)(80.0f * treble);
+  int wr = 42 + (int)((85.0f * bass + 110.0f * env) * react);
+  int wx = 105 + (int)(45.0f * mid * react);
+  int wy = 105 + (int)(45.0f * mid * react);
+  int wd = 78 + (int)(80.0f * treble * react);
   const int wtot = wr + wx + wy + wd;
   const int ar = wr * 508 / wtot;
   const int ax = wx * 508 / wtot;
@@ -94,22 +104,27 @@ static void plasma_render(uint16_t *out, const EffectInput *in) {
   // Frequencies are mutually irrational-ish on purpose: 2.7 / 2.1 / 1.9 / 2.0
   // cycles across the disc. Sharing a common divisor makes the four terms lock
   // into a static moire instead of drifting past each other.
+  // Scaled together so the four terms keep their ratio and stay mutually
+  // irrational-ish; sharing a divisor is what locks them into a static moire.
+  const int fx = (int)(727.0f * scalek), fy = (int)(563.0f * scalek);
+  const int fd = (int)(259.0f * scalek), fr = (int)(497.0f * scalek);
   for (int x = 0; x < EFFECT_W; ++x)
-    s_colx[x] = (int16_t)((effect_sin8[(uint8_t)(((x * 727) >> 8) + phx)] * ax) / 127);
+    s_colx[x] = (int16_t)((effect_sin8[(uint8_t)(((x * fx) >> 8) + phx)] * ax) / 127);
   for (int y = 0; y < EFFECT_H; ++y)
-    s_rowy[y] = (int16_t)((effect_sin8[(uint8_t)(((y * 563) >> 8) + phy)] * ay) / 127);
+    s_rowy[y] = (int16_t)((effect_sin8[(uint8_t)(((y * fy) >> 8) + phy)] * ay) / 127);
   for (int d = 0; d < EFFECT_W + EFFECT_H; ++d)
-    s_diag[d] = (int16_t)((effect_sin8[(uint8_t)(((d * 259) >> 8) + phd)] * ad) / 127);
+    s_diag[d] = (int16_t)((effect_sin8[(uint8_t)(((d * fd) >> 8) + phd)] * ad) / 127);
   for (int r = 0; r < 256; ++r)
-    s_radl[r] = (int16_t)((effect_sin8[(uint8_t)(((r * 497) >> 8) + phr)] * ar) / 127);
+    s_radl[r] = (int16_t)((effect_sin8[(uint8_t)(((r * fr) >> 8) + phr)] * ar) / 127);
 
   // ---- palette: integer cosine ramp, no sinf, ~1500 cycles ---------------
-  const int gain = effect_clamp_u8((int)(110.0f + 145.0f * (0.30f + 0.45f * energy + 0.45f * env)));
+  const int gain = effect_clamp_u8(
+      (int)((110.0f + 145.0f * (0.30f + (0.45f * energy + 0.45f * env) * react)) * glowk));
   // Squared, so this is a punch rather than a glow -- and capped short of a
   // full whiteout so the field structure stays readable through the flash.
-  const int wash = (int)(82.0f * env * env);
+  const int wash = (int)(82.0f * env * env * react);
   for (int i = 0; i < 256; ++i) {
-    const uint8_t p = (uint8_t)(i + s_hue);
+    const uint8_t p = (uint8_t)(i + s_hue + (uint8_t)(knob(3) * 255.0f));
     int r = (effect_sinu(p) * gain) >> 8;
     int g = (effect_sinu((uint8_t)(p + 85)) * gain) >> 8;
     int b = (effect_sinu((uint8_t)(p + 170)) * gain) >> 8;

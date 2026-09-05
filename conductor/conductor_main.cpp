@@ -47,6 +47,7 @@
 // Relative on purpose: -I${PROJECT_DIR}/effects in platformio.ini comes out
 // mangled on Windows builds, and the display file already includes this way.
 #include "../effects/effects.h"
+#include "../effects/knobs.h"
 #include "dsp.h"
 #include "mic_source.h"
 #include "leader_link.h"
@@ -93,6 +94,11 @@ static void setShader(int index) {
   currentShader = (uint8_t)index;
   lastShaderMs = millis();
   conductorDisplaySetShader(currentShader);
+  // Knob 6 is "kick" in mon and unused in plasma, so values do not carry
+  // across an effect change -- they load that effect's declared defaults, and
+  // anything listening is told the new labels and values.
+  knobs_reset_for(currentShader);
+  leaderLinkPublishKnobs(currentShader);
   Serial.printf("[conductor] shader -> %u (%s)\n", (unsigned)currentShader,
                 effects_all[currentShader]->name);
 }
@@ -132,6 +138,25 @@ static int parseEffect(const String &text) {
   return -1;
 }
 
+// A knob turn has to reach two places: the leader's own panel, which renders
+// the same effect from the same code, and every badge. Broadcast, because the
+// point is that the swarm changes together.
+static void setKnob(int index, uint8_t value, const uint8_t target[3]) {
+  if (index < 0 || index >= KNOB_COUNT) return;
+  if (chorusIdIsBroadcast(target)) knob_set(index, value);
+  radio.command(CMD_SET_KNOB, target, (uint8_t)index, value);
+}
+
+static void printKnobs() {
+  const KnobSpec *spec = effect_knob_specs(currentShader);
+  Serial.printf("[knobs] %s:\n", effects_all[currentShader]->name);
+  for (int i = 0; i < KNOB_COUNT; i++) {
+    if (!spec[i].name) continue;
+    Serial.printf("  %d %-12s %3u (default %u)\n", i + 1, spec[i].name, (unsigned)knob_raw(i),
+                  (unsigned)spec[i].def);
+  }
+}
+
 static void printRoster() {
   radio.rosterExpire(ROSTER_STALE_MS);
   const int n = radio.rosterCount();
@@ -163,6 +188,24 @@ static bool handleSwarmCommand(const String &line) {
     printRoster();
     return true;
   }
+  if (line == "knobs" || line == "k") {
+    printKnobs();
+    return true;
+  }
+  if (line == "reset") {
+    const uint8_t all[3] = {0, 0, 0};
+    knobs_reset_for(currentShader);
+    radio.command(CMD_RESET_KNOBS, all);
+    Serial.println("[knobs] back to this effect's defaults, everywhere");
+    printKnobs();
+    return true;
+  }
+  if (line == "crests") {
+    Serial.printf("[swarm] %d crests:", mon_variant_count());
+    for (int i = 0; i < mon_variant_count(); i++) Serial.printf(" %d=%s", i, mon_variant_name(i));
+    Serial.println();
+    return true;
+  }
   if (line == "rollcall") {
     const uint8_t all[3] = {0, 0, 0};
     radio.command(CMD_ROLL_CALL, all);
@@ -179,8 +222,26 @@ static bool handleSwarmCommand(const String &line) {
   String arg = (sp < 0) ? String("") : rest.substring(sp + 1);
   arg.trim();
 
+  // knob takes a number where the others take a badge id, so it is handled
+  // before the id parse rather than pretending "3" is a badge.
+  if (verb == "knob") {
+    const int n = who.toInt();
+    const uint8_t all[3] = {0, 0, 0};
+    if (n < 1 || n > KNOB_COUNT) {
+      Serial.printf("[knobs] knob number must be 1..%d\n", KNOB_COUNT);
+      return true;
+    }
+    const uint8_t v = (uint8_t)constrain(arg.toInt(), 0, 255);
+    setKnob(n - 1, v, all);
+    const KnobSpec *spec = effect_knob_specs(currentShader);
+    Serial.printf("[knobs] %d (%s) -> %u\n", n, spec[n - 1].name ? spec[n - 1].name : "unused",
+                  (unsigned)v);
+    return true;
+  }
+
   uint8_t target[3];
-  if (verb != "pin" && verb != "free" && verb != "find" && verb != "dim") return false;
+  if (verb != "pin" && verb != "free" && verb != "find" && verb != "dim" && verb != "crest")
+    return false;
   if (!parseBadgeId(who, target)) {
     Serial.printf("[swarm] '%s' is not a badge id (six hex digits, or 'all')\n", who.c_str());
     return true;
@@ -205,6 +266,23 @@ static bool handleSwarmCommand(const String &line) {
     const uint8_t secs = arg.isEmpty() ? 5 : (uint8_t)constrain(arg.toInt(), 1, 60);
     radio.command(CMD_IDENTIFY, target, secs);
     Serial.printf("[swarm] %s pulsing for %us\n", who.c_str(), (unsigned)secs);
+    return true;
+  }
+  if (verb == "crest") {
+    int variant = -1;
+    for (int i = 0; i < mon_variant_count(); i++) {
+      if (arg == mon_variant_name(i)) variant = i;
+    }
+    if (variant < 0 && !arg.isEmpty() && isDigit(arg[0])) {
+      const int n = arg.toInt();
+      if (n >= 0 && n < mon_variant_count()) variant = n;
+    }
+    if (variant < 0) {
+      Serial.printf("[swarm] no crest '%s' (try `crests`)\n", arg.c_str());
+      return true;
+    }
+    radio.command(CMD_SET_CREST, target, (uint8_t)variant);
+    Serial.printf("[swarm] %s wears %s\n", who.c_str(), mon_variant_name(variant));
     return true;
   }
   if (verb == "dim") {
@@ -240,6 +318,20 @@ static void applyLeaderControl(const LeaderControlFrame &f) {
       radio.command(CMD_ROLL_CALL, all);
       break;
     }
+    case LEADER_OP_SET_KNOB:
+      setKnob(f.arg0, f.arg1, f.target);
+      leaderLinkPublishKnobs(currentShader);
+      break;
+    case LEADER_OP_RESET_KNOBS: {
+      const uint8_t all[3] = {0, 0, 0};
+      knobs_reset_for(currentShader);
+      radio.command(CMD_RESET_KNOBS, all);
+      leaderLinkPublishKnobs(currentShader);
+      break;
+    }
+    case LEADER_OP_SET_CREST:
+      radio.command(CMD_SET_CREST, f.target, f.arg0);
+      break;
     default: Serial.printf("[ble] unknown op %u\n", (unsigned)f.op); break;
   }
 }
@@ -254,6 +346,8 @@ static void handleSerialLine(String line) {
     Serial.printf("  cycle=%lu ms\n", (unsigned long)shaderCycleMs);
     Serial.println("[conductor] swarm: who | rollcall | pin <id|all> <fx> | free <id|all>");
     Serial.println("[conductor]        find <id|all> [secs] | dim <id|all> <0-255>");
+    Serial.println("[conductor] knobs: knobs | knob <1-8> <0-255> | reset");
+    Serial.println("[conductor] crest: crests | crest <id|all> <name>");
     return;
   }
   if (handleSwarmCommand(line)) return;
@@ -366,6 +460,7 @@ void setup() {
   // swarm is being fed would risk the one job this board has for the sake of a
   // console nobody may connect to.
   bleUp = leaderLinkBegin();
+  if (bleUp) leaderLinkPublishKnobs(currentShader);
 }
 
 void loop() {

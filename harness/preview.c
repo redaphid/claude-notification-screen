@@ -22,6 +22,7 @@
 #include <time.h>
 
 #include "../effects/effects.h"
+#include "../effects/knobs.h"
 #include "mock_dj.h"
 
 // Start close to the uint32 wrap so a normal 150-frame run rolls time_ms over
@@ -102,7 +103,9 @@ static int check_round_mask(const uint16_t *fb) {
 static void usage(void) {
   fprintf(stderr,
           "usage: preview [--effect NAME] [--frames N] [--fps F] [--bpm B]\n"
-          "               [--out DIR] [--bench N] [--list]\n");
+          "               [--out DIR] [--bench N] [--list] [--knobs]\n"
+          "               [--knob N=V ...]   N is 1..%d, V is 0..255\n",
+          KNOB_COUNT);
 }
 
 int main(int argc, char **argv) {
@@ -112,6 +115,9 @@ int main(int argc, char **argv) {
   double fps = 30.0;
   float bpm = 118.0f;
   int bench = 0;
+  int show_knobs = 0;
+  const char *setk[KNOB_COUNT];
+  int nset = 0;
 
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--list")) {
@@ -129,6 +135,11 @@ int main(int argc, char **argv) {
       bpm = (float)atof(argv[++i]);
     } else if (!strcmp(argv[i], "--bench") && i + 1 < argc) {
       bench = atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--knobs")) {
+      show_knobs = 1;
+    } else if (!strcmp(argv[i], "--knob") && i + 1 < argc) {
+      if (nset < (int)(sizeof(setk) / sizeof(setk[0]))) setk[nset++] = argv[++i];
+      else ++i;
     } else {
       usage();
       return 2;
@@ -144,6 +155,34 @@ int main(int argc, char **argv) {
     for (int e = 0; e < effects_count; ++e) fprintf(stderr, " %s", effects_all[e]->name);
     fprintf(stderr, "\n");
     return 2;
+  }
+
+  // Knobs default to what this effect declares, then the command line
+  // overrides. Same order the firmware applies them in, so a value that looks
+  // right here looks right on a badge.
+  {
+    int idx = 0;
+    for (int e = 0; e < effects_count; ++e)
+      if (effects_all[e] == fx) idx = e;
+    knobs_reset_for(idx);
+    for (int i = 0; i < nset; ++i) {
+      int n = 0, v = 0;
+      if (sscanf(setk[i], "%d=%d", &n, &v) == 2 && n >= 1 && n <= KNOB_COUNT) {
+        knob_set(n - 1, (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v)));
+      } else {
+        fprintf(stderr, "preview: bad --knob '%s' (want N=V)\n", setk[i]);
+        return 2;
+      }
+    }
+    if (show_knobs) {
+      const KnobSpec *spec = effect_knob_specs(idx);
+      printf("%s knobs:\n", fx->name);
+      for (int i = 0; i < KNOB_COUNT; ++i) {
+        if (!spec[i].name) continue;
+        printf("  %d %-12s %3u\n", i + 1, spec[i].name, knob_raw(i));
+      }
+      return 0;
+    }
   }
 
   uint16_t *fb = (uint16_t *)malloc((size_t)EFFECT_PIXELS * sizeof(uint16_t));

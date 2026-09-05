@@ -45,6 +45,17 @@ enum ChorusCmdOp : uint8_t {
   // Answer with a hello now instead of at the next beacon. Costs one frame per
   // badge; the reply is staggered by MAC so thirty badges do not collide.
   CMD_ROLL_CALL = 5,
+  // arg0 = knob index 0..KNOB_COUNT-1, arg1 = value 0..255. Live parameters,
+  // the paper-cranes way: tune the visual while it is running rather than
+  // rebuilding it. Sent to one badge or to the whole swarm.
+  CMD_SET_KNOB = 6,
+  // Put every knob back to what the current effect declares. The way out of
+  // having turned something to a place you cannot see your way back from.
+  CMD_RESET_KNOBS = 7,
+  // arg0 = mon variant index. Which family crest a badge wears. Persisted, so
+  // it survives the power bank being swapped -- a crest is an identity, not a
+  // setting, and a badge that forgets whose it is at 3am is no use.
+  CMD_SET_CREST = 8,
 };
 
 struct __attribute__((packed)) ChorusCommand {

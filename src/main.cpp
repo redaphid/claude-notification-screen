@@ -17,6 +17,7 @@
 #include "chorus_packet.h"
 #include "display.h"
 #include "effects.h"
+#include "knobs.h"
 #include "phone_link.h"
 
 static RoundBadgeDisplay display;
@@ -174,6 +175,8 @@ static volatile uint8_t pinnedShader = 0;
 static volatile uint32_t pinUntilMs = 0;  // 0 == until released
 static volatile uint32_t identifyUntilMs = 0;
 static volatile uint8_t requestedBrightness = 255;
+// -1 = nothing asked for. Applied and persisted from loop().
+static volatile int16_t requestedCrest = -1;
 static uint8_t appliedBrightness = 255;
 // A roll call answered by thirty badges in the same millisecond is thirty
 // collisions. Each badge waits a slice of a second derived from its own MAC.
@@ -329,6 +332,10 @@ static void monSelectForThisBadge() {
     }
   }
   if (variant < 0) variant = (int)((tail * 2654435761u) >> 8) % mon_variant_count();
+  // A crest chosen over the air outranks the one derived from the MAC: someone
+  // picked it on purpose, and the MAC only ever supplied a default.
+  const int stored = (int)prefs.getUInt("crest", 0xFFFFFFFFu);
+  if (stored >= 0 && stored < mon_variant_count()) variant = stored;
   mon_select(variant);
   myCrest = variant;
   Serial.printf("[badge] crest: %s (mon variant %d)\n", mon_variant_name(variant), variant);
@@ -405,6 +412,17 @@ static void applyCommand(const ChorusCommand &c) {
     case CMD_ROLL_CALL:
       // Spread the answers across a second so the replies do not collide.
       helloDueMs = now + (uint32_t)(chorusIdToTail(myId) % 900u);
+      break;
+    case CMD_SET_KNOB:
+      if (c.arg0 < KNOB_COUNT) knob_set(c.arg0, c.arg1);
+      break;
+    case CMD_RESET_KNOBS:
+      knobs_reset_for(activeShader);
+      break;
+    case CMD_SET_CREST:
+      // Written through to flash by loop(), not here: this runs in the WiFi
+      // task and a flash write is not something to do from it.
+      if (c.arg0 < (uint8_t)mon_variant_count()) requestedCrest = c.arg0;
       break;
     default:
       break;
@@ -926,6 +944,19 @@ void loop() {
     display.setBrightness(appliedBrightness);
   }
 
+  // A crest is an identity, so it is remembered. Flash writes happen here, in
+  // loop context, and only when the value actually changed -- NVS has a finite
+  // number of erases and a slider is a machine for generating writes.
+  if (requestedCrest >= 0 && requestedCrest != myCrest) {
+    myCrest = requestedCrest;
+    mon_select(myCrest);
+    prefs.putUInt("crest", (uint32_t)myCrest);
+    Serial.printf("[badge] crest -> %s (%d), remembered\n", mon_variant_name(myCrest), myCrest);
+    requestedCrest = -1;
+  } else if (requestedCrest >= 0) {
+    requestedCrest = -1;
+  }
+
   // Presence, not smoothing: a badge that can still hear the conductor shows
   // what it was told; one that has walked out of range exhales over ~600ms.
   const bool hearing = isConductor || !radioUp || heard;
@@ -954,6 +985,9 @@ void loop() {
   in.beat_env = shown[FEAT_ENERGY];
   prevEnergy = shown[FEAT_ENERGY];
 
+  // Load this effect's knob defaults the first time it is shown, and never
+  // again while it stays shown -- see knobs_follow_effect().
+  knobs_follow_effect(activeShader);
   const Effect *effect = effects_by_index(activeShader);
   effect->render((uint16_t *)canvas.getBuffer(), &in);
 

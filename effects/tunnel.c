@@ -22,6 +22,7 @@
 //               stacks visible rings instead of just brightening.
 //   beat_env -> global brightness envelope on the fog table.
 #include "effect_common.h"
+#include "knobs.h"
 
 #include <string.h>
 
@@ -109,12 +110,17 @@ static void tunnel_render(uint16_t *out, const EffectInput *in) {
 
   // A ring crosses the visible ~212 units of depth in 1.4s idling, 240ms flat
   // out. Faster than that and the rings strobe against the 30fps frame rate.
-  s_z += (uint32_t)((float)dt * (0.15f + 0.75f * energy) * 256.0f);
-  s_rot += (uint16_t)((float)dt * (6.0f + 60.0f * mid));
+  // Shared knob meanings, see knobs.h.
+  const float react = knob(0) * 2.0f;
+  const float speedk = knob(2) * 2.0f;
+  const float glowk = 0.4f + 1.2f * knob(4);
+
+  s_z += (uint32_t)((float)dt * (0.15f * speedk + 0.75f * energy * react) * 256.0f);
+  s_rot += (uint16_t)((float)dt * (6.0f * speedk + 60.0f * mid * react));
 
   if (in->beat) {
     s_z += 40u * 256u;  // the lurch: two thirds of a wall band, instantly
-    s_hue = (uint8_t)(s_hue + 29u);
+    s_hue = (uint8_t)(s_hue + (uint8_t)(29.0f * react));
     s_ring_depth[s_ring_next] = (uint8_t)(s_z >> 8);
     s_ring_life[s_ring_next] = 1.0f;
     s_ring_next = (s_ring_next + 1) & (TUNNEL_RINGS - 1);
@@ -142,7 +148,7 @@ static void tunnel_render(uint16_t *out, const EffectInput *in) {
   // The core goes fully black: that is the vanishing point, and it is also
   // where the 1/r LUT aliases, so the fog is doing double duty.
   const float horizon = 0.36f - 0.18f * bass;  // bass pulls the throat open
-  const float bright = 0.80f + 0.18f * energy + 0.20f * treble + 0.32f * env;
+  const float bright = (0.80f + (0.18f * energy + 0.20f * treble + 0.32f * env) * react) * glowk;
   for (int r = 0; r < 256; ++r) {
     float f = effect_clamp01(((float)r / 255.0f - horizon) / (1.0f - horizon));
     f = f * f * (3.0f - 2.0f * f);  // smoothstep: soft horizon, no fog banding
@@ -151,7 +157,7 @@ static void tunnel_render(uint16_t *out, const EffectInput *in) {
 
   // ---- palette ------------------------------------------------------------
   for (int i = 0; i < 256; ++i) {
-    const uint8_t p = (uint8_t)((i >> 1) + s_hue);
+    const uint8_t p = (uint8_t)((i >> 1) + s_hue + (uint8_t)(knob(3) * 255.0f));
     const int shade = i;  // 0..255 already carries the brightness ramp
     int r = (effect_sinu(p) * shade) >> 8;
     int g = (effect_sinu((uint8_t)(p + 70)) * shade) >> 8;
