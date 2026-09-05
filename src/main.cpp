@@ -69,6 +69,52 @@ static uint32_t txOk = 0, txFail = 0;
 static constexpr int16_t SEQ_REORDER_WINDOW = 256;
 static uint32_t resyncCount = 0;
 
+// Who did this badge actually hear, and how far had the packet travelled?
+//
+// With one conductor and one badge, `rx` was unambiguous. With several benches
+// in radio range of each other it is not: a packet may come straight from the
+// conductor or via somebody else's badge relaying it, and the counters cannot
+// tell those apart. The ESP-NOW callback hands us the MAC of the immediate
+// transmitter, which is exactly the distinction needed -- origin versus relay.
+//
+// This is what makes a mesh test readable: hop 0 is heard directly, hop 1 came
+// through one other node, and a badge that only ever sees hop 2 is being
+// carried by the swarm rather than by the conductor.
+static constexpr int MAX_SOURCES = 8;
+struct SourceStat {
+  uint8_t mac[6];
+  uint32_t count;
+  uint8_t lastHop;
+  uint32_t lastMs;
+  bool used;
+};
+static SourceStat sources[MAX_SOURCES];
+static uint32_t rxByHop[CHORUS_MAX_HOP + 2];
+
+// Called from the WiFi task, already inside the feature spinlock.
+static void noteSource(const uint8_t *mac, uint8_t hop) {
+  if (hop < (uint8_t)(CHORUS_MAX_HOP + 2)) rxByHop[hop]++;
+  for (int i = 0; i < MAX_SOURCES; i++) {
+    if (sources[i].used && memcmp(sources[i].mac, mac, 6) == 0) {
+      sources[i].count++;
+      sources[i].lastHop = hop;
+      sources[i].lastMs = millis();
+      return;
+    }
+  }
+  for (int i = 0; i < MAX_SOURCES; i++) {
+    if (!sources[i].used) {
+      memcpy(sources[i].mac, mac, 6);
+      sources[i].used = true;
+      sources[i].count = 1;
+      sources[i].lastHop = hop;
+      sources[i].lastMs = millis();
+      return;
+    }
+  }
+  // More than MAX_SOURCES neighbours: the table is a diagnostic, not a router.
+}
+
 // Smoothed values actually handed to the visual. Asymmetric on purpose: fast
 // attack so a kick lands now, slow release so a dropped packet reads as a slow
 // exhale instead of a flicker.
@@ -153,6 +199,7 @@ static void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
     rxCount++;
     for (int i = 0; i < FEAT_COUNT; i++) rxFeatures[i] = pkt.features[i];
     rxShader = pkt.shader;
+    noteSource(mac, pkt.hop);
   }
   portEXIT_CRITICAL(&featureMux);
   if (!fresh) return;  // already relayed this one down another path
@@ -425,6 +472,28 @@ void loop() {
                     (unsigned long)resyncCount, (unsigned long)bootAttempts);
     }
     if (relayDropped) Serial.printf("[badge] relay queue dropped %lu\n", (unsigned long)relayDropped);
+
+    // Neighbour table: who this badge is hearing, and at what hop distance.
+    // Reported every second alongside the counters so a multi-bench test can be
+    // read straight off the serial line without correlating logs afterwards.
+    char neighbours[200];
+    int used = 0;
+    neighbours[0] = '\0';
+    portENTER_CRITICAL(&featureMux);
+    for (int i = 0; i < MAX_SOURCES && used < (int)sizeof(neighbours) - 40; i++) {
+      if (!sources[i].used) continue;
+      used += snprintf(neighbours + used, sizeof(neighbours) - used, " %02X%02X%02X:%lu(h%u)",
+                       sources[i].mac[3], sources[i].mac[4], sources[i].mac[5],
+                       (unsigned long)sources[i].count, (unsigned)sources[i].lastHop);
+    }
+    uint32_t hops[CHORUS_MAX_HOP + 2];
+    memcpy(hops, rxByHop, sizeof(hops));
+    portEXIT_CRITICAL(&featureMux);
+    if (used) {
+      Serial.printf("[badge] heard%s | by hop: %lu/%lu/%lu/%lu/%lu\n", neighbours,
+                    (unsigned long)hops[0], (unsigned long)hops[1], (unsigned long)hops[2],
+                    (unsigned long)hops[3], (unsigned long)hops[4]);
+    }
     frames = 0;
     lastReportMs = now;
     if (bootAttempts && now > 3000) {
