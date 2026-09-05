@@ -1,3 +1,6 @@
 .pio/
 backups/
 .claude/
+
+# wrangler local state/cache
+.wrangler/

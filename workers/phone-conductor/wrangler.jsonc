@@ -1,0 +1,15 @@
+{
+  "name": "chorus-phone-conductor",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "../../web/phone",
+    "binding": "ASSETS"
+  },
+  "routes": [
+    { "pattern": "phone.beadfamous.com", "custom_domain": true }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}
