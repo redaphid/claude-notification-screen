@@ -86,15 +86,39 @@
     font-size: 12px;
     color: var(--ink-dim);
   }
+  .sink-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  button {
+    background: var(--accent);
+    color: #0b0b10;
+    border: 0;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button[data-running="1"] { background: var(--accent2); }
+  #sink-log {
+    max-height: 200px;
+    overflow-y: auto;
+    color: var(--ink-dim);
+  }
 </style>
 </head>
 <body>
 <h1>Chorus Phone Conductor</h1>
-<p class="sub">Stage A &mdash; sliders only. No Bluetooth, no MIDI, nothing plugged in.</p>
+<p class="sub">Stage B &mdash; sliders into a fake sink. No real Bluetooth, no MIDI.</p>
 
 <div class="banner">
-  This page currently only moves sliders on screen. It does not talk to a
-  badge yet. That is the next stage, not this one.
+  The sink below is <strong>fake</strong>. It encodes exactly the 8 bytes a
+  badge would receive and logs them, but sends them nowhere. Nothing here has
+  ever touched hardware.
 </div>
 
 <div class="slider-row">
@@ -119,11 +143,21 @@
   <pre id="frame-json">{}</pre>
 </div>
 
+<div class="frame">
+  <h2>Sink</h2>
+  <div class="sink-row">
+    <button id="btn-sink" type="button">Start fake sink</button>
+    <span class="value" id="sink-stats">idle</span>
+  </div>
+  <pre id="sink-log">Not running.</pre>
+</div>
+
 <p class="stage-note">
-  This preview shows the same fields a badge expects on
+  The sink encodes the same 8 bytes a badge expects on
   <code>PHONE_LINK_FEATURES_UUID</code> (bass, mid, treble, energy, beat,
-  shader, seq &mdash; see <code>src/phone_link.h</code>). Nothing here is sent
-  anywhere yet.
+  shader, then little-endian uint16 seq &mdash; see
+  <code>src/phone_link.h</code>) and writes them at 30&nbsp;Hz. The fake sink
+  logs those bytes instead of transmitting them.
 </p>
 
 <script>
@@ -149,10 +183,99 @@
     slider.addEventListener('input', () => {
       state[id] = parseFloat(slider.value);
       readout.textContent = state[id].toFixed(2);
-      state.seq = (state.seq + 1) & 0xffff;
       render();
     });
   });
+
+  // --- The wire encoder. This is the contract; keep it in step with
+  // --- src/phone_link.h. 8 packed bytes, seq little-endian.
+  const FRAME_BYTES = 8;
+
+  function encodeFrame(s) {
+    const buf = new ArrayBuffer(FRAME_BYTES);
+    const v = new DataView(buf);
+    const byte = (x) => Math.max(0, Math.min(255, Math.round(x * 255)));
+    v.setUint8(0, byte(s.bass));
+    v.setUint8(1, byte(s.mid));
+    v.setUint8(2, byte(s.treble));
+    v.setUint8(3, byte(s.energy));
+    v.setUint8(4, s.beat ? 1 : 0);
+    v.setUint8(5, s.shader & 0xff);
+    v.setUint16(6, s.seq & 0xffff, true); // little-endian, matches the badge
+    return new Uint8Array(buf);
+  }
+
+  const hex = (bytes) =>
+    Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+
+  // --- Sinks. Stage D's real BLE sink implements this same interface, so
+  // --- nothing above this line has to change when hardware finally exists.
+  function createFakeSink(onLog) {
+    return {
+      name: 'fake',
+      async connect() {
+        onLog('fake sink connected (nothing was transmitted)');
+        return true;
+      },
+      send(bytes) {
+        onLog(hex(bytes));
+      },
+      disconnect() {
+        onLog('fake sink disconnected');
+      },
+    };
+  }
+
+  const SEND_HZ = 30;
+  const logEl = document.getElementById('sink-log');
+  const statsEl = document.getElementById('sink-stats');
+  const btn = document.getElementById('btn-sink');
+
+  let sink = null;
+  let timer = null;
+  let sent = 0;
+  let startedAt = 0;
+  const lines = [];
+
+  function log(line) {
+    lines.push(line);
+    if (lines.length > 40) lines.shift();
+    logEl.textContent = lines.join('\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function tick() {
+    state.seq = (state.seq + 1) & 0xffff;
+    const bytes = encodeFrame(state);
+    sink.send(bytes);
+    sent++;
+    const secs = (performance.now() - startedAt) / 1000;
+    statsEl.textContent =
+      sent + ' frames, ' + (sent / Math.max(secs, 0.001)).toFixed(1) + ' Hz';
+    render();
+  }
+
+  async function startSink() {
+    sink = createFakeSink(log);
+    await sink.connect();
+    sent = 0;
+    startedAt = performance.now();
+    timer = setInterval(tick, 1000 / SEND_HZ);
+    btn.textContent = 'Stop fake sink';
+    btn.dataset.running = '1';
+  }
+
+  function stopSink() {
+    clearInterval(timer);
+    timer = null;
+    if (sink) sink.disconnect();
+    sink = null;
+    btn.textContent = 'Start fake sink';
+    btn.dataset.running = '0';
+    statsEl.textContent = 'stopped after ' + sent + ' frames';
+  }
+
+  btn.addEventListener('click', () => (timer ? stopSink() : startSink()));
 
   render();
 </script>
