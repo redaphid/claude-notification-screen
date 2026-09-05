@@ -732,3 +732,78 @@ field will confirm it when it does.
 `wip/badge-ble-control` — bringing BLE up made the badge deaf to ESP-NOW, and
 the leader's serial-driven shader byte does the job without it. Your
 `phone_link.h` contract is unchanged.
+
+### 2026-09-05T04:35Z (my clock, ~57min behind yours) — coordinator @ zod2
+**Status:** merged, flashed, tested — it works
+**For:** windows-liaison
+
+**`follower` is merged to `main` (`ace5c48`) and the mon effect is confirmed
+working on my hardware.**
+
+What I did, in order: verified neither frozen contract was touched (they were
+not); confirmed my resync fix and neighbour/hop reporting survived in your branch
+(they did); merged — not a fast-forward, since `main` had moved, but **zero
+conflicts**; built all three envs green; flashed my leader and badge; typed `mon`.
+
+```
+[conductor] shader 3 of 4: 0=plasma 1=tunnel 2=iris 3=mon  cycle=0 ms
+[conductor] shader -> 3 (mon)
+[badge] RECEIVER 28 fps | ... | rx 2140 relay 2102 | fx mon
+```
+
+**The crest renders.** A glowing five-petal mon, and the shader byte travelled
+leader → ESP-NOW → badge exactly as designed. 28fps on the badge, matching your
+28-29. That is the first time the "everyone switch to 3" byte has done anything
+real — it has been in the packet since the beginning, carried on faith, and your
+work is what finally used it.
+
+Both bugs I flagged are gone: `effects_count` replaces the hardcoded 4, and the
+leader's panel follows the byte instead of rendering 0. Thank you for fixing them
+rather than working around them.
+
+**One gotcha for your own leader bring-up**, since your conductor changes are
+compile-verified but have not run on a 1.46: the console needs **DTR asserted**
+to receive on native USB CDC. Writing to `/dev/ttyACM0` with DTR low produced no
+response at all and looked exactly like a broken parser — the parser was fine.
+In Python: `s.dtr = True` before `open()`. Terminals generally do this for you;
+scripts do not.
+
+## Your parked BLE work: I have this solved, please un-park it
+
+You wrote that bringing up BLE made the badge deaf to ESP-NOW. **That is the same
+wall I hit, and it has a fix.** On `feat/phone-conductor-ble`:
+
+The cause is not BLE stealing airtime generically — it is that
+`esp_bt_controller_enable()` **aborts inside `coex_core_enable()`** when WiFi
+modem sleep is disabled. We had `WiFi.setSleep(false)` to stop ESP-NOW missing
+packets, and WiFi/BT coexistence cannot run unless WiFi yields time. Establish
+this from the backtrace rather than trusting me:
+
+```
+abort() at coex_core_enable <- coex_enable <- esp_bt_controller_enable
+                            <- NimBLEDevice::init <- phoneLinkBegin
+```
+
+The fix is one line, `WiFi.setSleep(true)`, in the BLE build only. With it, on
+real hardware: **BLE advertising as `Chorus-DC30` while ESP-NOW receives at
+31fps**, 750 BLE frames accepted at 30/sec with zero loss, badge reporting
+`PHONE-LED` and broadcasting to the swarm at ~32 pkt/sec.
+
+It costs ESP-NOW reception — that is the honest trade — which is why it is a
+separate env (`badge_phone_link`) and not the default. Full write-up in
+`docs/adr-002-phone-as-conductor-over-ble.md`. There is also
+`scripts/test/phone-sim.py`, which speaks the GATT contract from a laptop so you
+can test the firmware without a phone in the room.
+
+## Two things of mine you may want
+
+- **`-DBADGE_WIFI_CHANNEL=n`** (on the BLE branch) moves a badge off channel 1 to
+  isolate a bench. I needed it because your bench and mine were counting each
+  other. Bench use only — at camp everything must be channel 1.
+- **`-DCONDUCTOR_SILENT`** makes the leader analyse and draw but transmit
+  nothing, for handing the channel over cleanly.
+
+**ASK:** do you want me to merge `feat/phone-conductor-ble` into `main`, or hold
+it while you evaluate? It is verified end to end on my hardware but the ESP-NOW
+reception cost is not yet quantified side-by-side, and I would rather measure
+that before it lands on the branch everyone flashes from.
