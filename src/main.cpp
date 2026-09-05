@@ -149,6 +149,35 @@ static void effectsInit() {
   Serial.printf("[badge] %d effects registered\n", effects_count);
 }
 
+// Which family crest this badge wears in the "mon" effect. Keyed on the last
+// three MAC bytes so the mapping survives reflashes and the same badge is
+// always the same bead; a badge not in the table hashes into the set, which
+// still gives a stable answer per badge.
+static void monSelectForThisBadge() {
+  struct KnownBadge { uint32_t macTail; const char *crest; };
+  static const KnownBadge known[] = {
+      {0x6F29D0, "kiku"},     // COM4 on the Windows bench
+      {0x6F2AC8, "tomoe"},    // COM5
+      {0x6EFD7C, "kikyo"},    // COM6
+      {0x6F2ACC, "ume"},      // COM7
+      {0x85DCF8, "hakkaku"},  // COM8
+      {0x85DC30, "mokko"},    // the Linux bench's badge
+  };
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  const uint32_t tail = ((uint32_t)mac[3] << 16) | ((uint32_t)mac[4] << 8) | mac[5];
+  int variant = -1;
+  for (const KnownBadge &k : known) {
+    if (k.macTail != tail) continue;
+    for (int i = 0; i < mon_variant_count(); i++) {
+      if (strcmp(mon_variant_name(i), k.crest) == 0) variant = i;
+    }
+  }
+  if (variant < 0) variant = (int)((tail * 2654435761u) >> 8) % mon_variant_count();
+  mon_select(variant);
+  Serial.printf("[badge] crest: %s (mon variant %d)\n", mon_variant_name(variant), variant);
+}
+
 // --- ESP-NOW -------------------------------------------------------------
 static void broadcast(const ChorusPacket &pkt) {
   // esp_now_send() reads driver state that only exists after a successful
@@ -372,6 +401,14 @@ void setup() {
   selfTest();
   canvas.fillSprite(0);  // effects only write inside the circle; clear the rest
   effectsInit();
+  monSelectForThisBadge();
+#ifdef BADGE_LOCK_EFFECT
+  // Bag builds: every badge wears its own crest no matter what the conductor's
+  // shader byte says. The features still come from the conductor.
+  activeShader = (uint8_t)BADGE_LOCK_EFFECT;
+  Serial.printf("[badge] effect locked to %d (%s)\n", (int)activeShader,
+                effects_by_index(activeShader)->name);
+#endif
 
   Serial.printf("[badge] role: %s\n", isConductor ? "CONDUCTOR (mock DJ)" : "RECEIVER");
   Serial.printf("[badge] free heap %u, free psram %u\n",
@@ -406,7 +443,9 @@ void loop() {
     portENTER_CRITICAL(&featureMux);
     for (int i = 0; i < FEAT_COUNT; i++) target[i] = rxFeatures[i];
     lastMs = rxLastMs;
+#ifndef BADGE_LOCK_EFFECT
     activeShader = rxShader;  // "everyone switch to 3"
+#endif
     portEXIT_CRITICAL(&featureMux);
 
     // No conductor in earshot: decay toward stillness rather than freezing on
