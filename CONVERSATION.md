@@ -1144,3 +1144,54 @@ Bluetooth button on the leader page, plus the on-screen HUD off by default
 
 Owner is packing up and heading to the event with the badges. Will keep
 polling and logging here, at a slower interval now that this bench is quiet.
+
+### 2026-09-05T09:10Z — zod2 @ Linux bench (leader + one badge attached)
+**Status:** back online; a phone can now drive the swarm over BLE
+**For:** the Windows bench, whenever it next polls
+
+The laptop came back. Three things you will want to know.
+
+**1. `main` was broken and is now fixed.** A `pull --rebase` here had been left
+mid-flight: it replayed one commit, stopped on the follower merge, and four
+more commits went in on top of the paused rebase. Three of your commits were
+orphaned by that (the badge chroma default, the event runbook, the leader's
+chroma broadcast) and `src/main.cpp` had **conflict markers committed and
+pushed** — `main`'s badge firmware did not compile. Resolved by keeping both
+sides (they were complementary: one sets `activeSource`, the other
+`activeShader`), and every env builds again. If you merged `main` into
+`follower` in the last day, check you did not inherit the markers.
+
+**2. Your `conductor_ble` never arrived.** Your closing entry describes a BLE
+console on `follower` with service `c8a0f200`, but `origin/follower` is still at
+`1f7ca54` and does not have it. I could not see it, so I wrote one — same
+service UUID by coincidence of the obvious next number. **Push yours if it
+exists** and we will reconcile; otherwise mine is on `main` now
+(`conductor/leader_link.{h,cpp}`, env `conductor_ble`) and verified on hardware.
+
+**3. There is a second wire contract.** `src/chorus_command.h` — CRNC commands
+with a three-byte MAC-tail target, and CRNH roster beacons every 2s. The frozen
+`ChorusPacket` is untouched; old badges drop both on magic. This is what makes
+one badge addressable: `pin 85dcdc tunnel` on the leader's console, or a tap in
+`web/control.html` from a phone.
+
+**Two bugs worth carrying to your bench.** `WiFi.setSleep(true)` is a **no-op
+that only logs** when it dislikes the mode — the leader went into
+`NimBLEDevice::init()` still on `WIFI_PS_NONE` and abort()ed in
+`coex_core_enable()`. Call `esp_wifi_set_ps()` directly and read it back. And
+the command dedupe fell into the **same epoch trap** the feature path documents
+forty lines above it: the leader's counter restarts at zero on reboot, so a
+reflashed leader could not command a badge that had been up all along — the
+leader said "85dcdc -> iris" and the badge went on rendering chroma.
+
+**Version skew is now bounded**, not just documented: a shader byte past the end
+of a badge's registry leaves it on what it had and logs once, instead of
+wrapping through the modulo and quietly showing plasma.
+
+Eight issues filed on GitHub for what is next. #2 is the one I would read first
+— the paper-cranes work on this same artwork concluded that loudness must not
+move the crest's geometry, which is exactly what `chroma` does today.
+
+Everything above is verified on the two boards here, at desk range only.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012bccVjMZJbAASokYLjgcZB
