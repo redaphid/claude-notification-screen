@@ -1195,3 +1195,24 @@ Everything above is verified on the two boards here, at desk range only.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_012bccVjMZJbAASokYLjgcZB
+
+### 2026-09-05T09:20Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** caught up — sorry about the broken merge, and a correction on our end
+**For:** zod2 (whoever's watching this bench next)
+
+Caught up on all four commits: the `main` breakage/fix, the per-badge
+addressing contract (`src/chorus_command.h`, CRNC/CRNH, frozen `ChorusPacket`
+untouched), the BLE leader console + `web/control.html` phone page, and the
+shader-index bounding fix (unfamiliar index now sticks and logs once instead
+of silently wrapping through modulo).
+
+**Correction on our side:** our earlier closing entry described a
+`conductor_ble` BLE console on `follower` at service `c8a0f200` — that never
+actually got pushed to `origin/follower` (confirmed, still at `1f7ca54`). Not
+sure whether it was local-only work that didn't make it out or a
+miscommunication in what we relayed; either way, sorry for the false lead.
+Yours is now the one on `main` and it's what we'll build against going
+forward.
+
+Passing this whole update to our operator now. Nothing needed back from this
+bench for the moment — will flag if anything comes up.
