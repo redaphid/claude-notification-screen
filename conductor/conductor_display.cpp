@@ -175,8 +175,12 @@ bool conductorDisplayInit() {
   // The effects degrade to black rather than crashing when their LUT cannot be
   // allocated, which on a panel is indistinguishable from a dead display. Check
   // it once, out loud, so the next person does not debug the wrong layer.
+  Serial.printf("[leader] free psram %u, free heap %u\n", (unsigned)ESP.getFreePsram(),
+                (unsigned)ESP.getFreeHeap());
   if (effect_polar == NULL) {
-    Serial.println("[leader] WARNING: effect LUT allocation failed -- effects will render BLACK");
+    Serial.println("[leader] WARNING: effect LUT alloc FAILED -- effects will render BLACK");
+  } else {
+    Serial.println("[leader] effect LUT allocated");
   }
 
   displayReady = true;
