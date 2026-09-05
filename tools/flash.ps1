@@ -149,7 +149,7 @@ function Invoke-SerialCheck([string]$ComPort, [int]$Seconds) {
 
 function Write-LogRow([hashtable]$Row) {
   $obj = [pscustomobject]$Row
-  if (Test-Path $LogPath) { $obj | Export-Csv -Path $LogPath -Append -NoTypeInformation }
+  if (Test-Path $LogPath) { $obj | Export-Csv -Path $LogPath -Append -Force -NoTypeInformation }
   else                    { $obj | Export-Csv -Path $LogPath -NoTypeInformation }
 }
 

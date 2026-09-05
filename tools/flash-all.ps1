@@ -79,6 +79,9 @@ foreach ($b in $boards) { Remove-Item (Join-Path $ResultsDir "$($b.Serial).json"
 
 $common = @('-BuildDir', $BuildDir, '-ResultsDir', $ResultsDir, '-VerifySeconds', $VerifySeconds, '-Claimant', 'flash-all')
 if ($SkipVerify) { $common += '-SkipVerify' }
+# The in-process (sequential) call needs named splatting; an array would bind positionally.
+$commonNamed = @{ BuildDir = $BuildDir; ResultsDir = $ResultsDir; VerifySeconds = $VerifySeconds; Claimant = 'flash-all' }
+if ($SkipVerify) { $commonNamed.SkipVerify = $true }
 $parallel = (-not $Sequential) -and ($PSVersionTable.PSVersion.Major -ge 7) -and $boards.Count -gt 1
 Step "Flashing $($boards.Count) board(s) $(if ($parallel) { "in parallel (max $MaxParallel)" } else { 'sequentially' })"
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -95,7 +98,7 @@ if ($parallel) {
 } else {
   foreach ($b in $boards) {
     Write-Host "`n--- $($b.Port) ---" -ForegroundColor Cyan
-    & $FlashOne -Port $b.Port @common
+    & $FlashOne -Port $b.Port @commonNamed
   }
 }
 $sw.Stop()
@@ -110,7 +113,7 @@ foreach ($b in $boards) {
 }
 $rows | Select-Object port, result, mac, role, radio, fps, usb_serial, note | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 $csvRows = $rows | Select-Object timestamp, usb_serial, port, mac, chip, flash, role, radio, fps, result, note, @{n = 'firmware'; e = { $_.firmware } }, @{n = 'env'; e = { $Env } }
-if (Test-Path $LogPath) { $csvRows | Export-Csv -Path $LogPath -Append -NoTypeInformation } else { $csvRows | Export-Csv -Path $LogPath -NoTypeInformation }
+if (Test-Path $LogPath) { $csvRows | Export-Csv -Path $LogPath -Append -Force -NoTypeInformation } else { $csvRows | Export-Csv -Path $LogPath -NoTypeInformation }
 $ok  = @($rows | Where-Object { $_.result -like 'OK*' }).Count
 $bad = $rows.Count - $ok
 Write-Host ("{0} OK, {1} not OK, log appended to {2}" -f $ok, $bad, $LogPath) -ForegroundColor $(if ($bad) { 'Yellow' } else { 'Green' })

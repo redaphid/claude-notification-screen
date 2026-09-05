@@ -175,7 +175,11 @@ static void mon_render(uint16_t *out, const EffectInput *in) {
   if (s_theta > 6.2831853f) s_theta -= 6.2831853f;
 
   // ---- size: the crest fills screen_r pixels, breathing with bass ---------
-  const float screen_r = 86.0f + 12.0f * bass + 10.0f * env;
+  // ChromaDepth mode zooms hard: the crest swells from small and far to
+  // overflowing the disc with the music, and the depth ramp does the rest.
+  const float screen_r = s_chroma
+      ? 58.0f + 42.0f * energy + 18.0f * bass + 16.0f * env
+      : 86.0f + 12.0f * bass + 10.0f * env;
   const float k = (float)mon_radius[v] / screen_r;  // motif px per screen px
   const int32_t cs = (int32_t)lrintf(cosf(s_theta) * k * 4096.0f);
   const int32_t sn = (int32_t)lrintf(sinf(s_theta) * k * 4096.0f);
