@@ -1,7 +1,9 @@
 .pio/
 backups/
-.claude/
+.claude/*
+!.claude/skills/
 outputs/
 harness/build/
 web/firmware/
 web/manifest.json
+flash-results/
