@@ -16,6 +16,7 @@
 #include "chorus_packet.h"
 #include "display.h"
 #include "effects.h"
+#include "phone_link.h"
 
 static RoundBadgeDisplay display;
 static LGFX_Sprite canvas(&display);
@@ -32,6 +33,25 @@ static constexpr uint16_t MOCK_BPM = 118;
 
 static bool isConductor = false;
 static bool radioUp = false;
+static bool phoneLinkUp = false;
+
+// Who is conducting this badge right now.
+//
+// The rule is deliberately simple and always favours the swarm over the phone:
+// a real conductor on the air wins, every time. A phone only takes over when
+// nothing has been heard for PHONE_LINK_YIELD_MS. Otherwise two sources drive
+// one swarm and the badges tear between them -- and because sequence numbers
+// come from different counters, each source would look to the other like a
+// conductor that had just restarted, so they would fight rather than blend.
+//
+// The consequence worth knowing: if two phones connect to two different badges
+// in a silent room, both become conductors and the swarm will split. The packet
+// carries no source identity to arbitrate with, and it is frozen, so this is
+// documented rather than solved. See docs/adr-002.
+enum ConductorSource : uint8_t { SRC_NONE = 0, SRC_PHONE = 1, SRC_ESPNOW = 2 };
+static ConductorSource activeSource = SRC_NONE;
+// Set when the phone reports an onset, consumed by the next rendered frame.
+static bool phoneOnset = false;
 
 // Counts boots that never reached steady rendering, so a badge can notice it is
 // caught in a boot loop: if the radio brings the rail down three times running
@@ -147,6 +167,15 @@ static void effectsInit() {
     if (effects_all[i]->init) effects_all[i]->init();
   }
   Serial.printf("[badge] %d effects registered\n", effects_count);
+}
+
+// Has a real conductor been on the air recently? A phone must yield to one.
+static bool heardRecently(uint32_t now) {
+  portENTER_CRITICAL(&featureMux);
+  const bool seen = rxSeen;
+  const uint32_t last = rxLastMs;
+  portEXIT_CRITICAL(&featureMux);
+  return seen && (now - last) <= PHONE_LINK_YIELD_MS;
 }
 
 // When a badge is the conductor (BOOT held at reset), its serial console picks
@@ -311,7 +340,18 @@ static bool espNowInit() {
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+#ifdef BADGE_PHONE_LINK
+  // BLE and ESP-NOW share one radio, and WiFi/BT coexistence can only work if
+  // WiFi yields airtime -- with modem sleep disabled, esp_bt_controller_enable()
+  // aborts inside coex_core_enable(). Verified by backtrace, not guessed.
+  //
+  // So a badge that can be conducted by a phone must let WiFi sleep, and pays
+  // for it in ESP-NOW reception. That is the real cost of the phone path, and
+  // it is why this is a separate build rather than the default.
+  WiFi.setSleep(true);
+#else
   WiFi.setSleep(false);  // ESP-NOW receive must not miss packets to modem sleep
+#endif
   // Transmit power is a power-budget knob, not just a range knob: sustained
   // transmit is what collapses a marginal supply. Lower it on anything running
   // off a tired power bank.
@@ -319,7 +359,14 @@ static bool espNowInit() {
 #define BADGE_TX_POWER WIFI_POWER_11dBm
 #endif
   WiFi.setTxPower(BADGE_TX_POWER);
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  // Channel 1 everywhere, because nothing negotiates at camp: a badge on a
+  // different channel from its conductor is simply deaf, with no error to say
+  // why. Overridable only for bench isolation, when two benches within radio
+  // range would otherwise count each other's packets.
+#ifndef BADGE_WIFI_CHANNEL
+#define BADGE_WIFI_CHANNEL 1
+#endif
+  esp_wifi_set_channel(BADGE_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
   setCpuFrequencyMhz(cpuBefore);
 
@@ -332,14 +379,14 @@ static bool espNowInit() {
 
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BROADCAST_ADDR, 6);
-  peer.channel = 1;
+  peer.channel = BADGE_WIFI_CHANNEL;
   peer.encrypt = false;
   if (esp_now_add_peer(&peer) != ESP_OK) {
     Serial.println("[badge] add broadcast peer FAILED");
     return false;
   }
 
-  Serial.printf("[badge] ESP-NOW up, channel 1, tx %ddBm, mac %s\n",
+  Serial.printf("[badge] ESP-NOW up, channel %d, tx %ddBm, mac %s\n", BADGE_WIFI_CHANNEL,
                 (int)WiFi.getTxPower() / 4, WiFi.macAddress().c_str());
   return true;
 }
@@ -462,6 +509,12 @@ void setup() {
                 effects_by_index(activeShader)->name);
 #endif
 
+#ifdef BADGE_PHONE_LINK
+  // BLE shares the radio with ESP-NOW, so it comes up last, after the spike of
+  // WiFi bring-up has passed and the panel is already drawing.
+  phoneLinkUp = phoneLinkBegin();
+#endif
+
   Serial.printf("[badge] role: %s\n", isConductor ? "CONDUCTOR (mock DJ)" : "RECEIVER");
   Serial.printf("[badge] free heap %u, free psram %u\n",
                 (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
@@ -489,6 +542,32 @@ void loop() {
       for (int i = 0; i < FEAT_COUNT; i++) pkt.features[i] = target[i];
       broadcast(pkt);
     }
+  } else if (phoneLinkUp && !heardRecently(now) && phoneLinkFresh(now)) {
+    // Nothing on the air and a phone is feeding us: this badge becomes the
+    // conductor and puts the phone's analysis on the air for everyone else.
+    uint8_t phoneBeat = 0, phoneShader = 0;
+    phoneLinkRead(target, &phoneBeat, &phoneShader);
+    // The phone ran a real onset detector -- median+MAD spectral flux with
+    // hysteresis and a refractory period -- and told us the answer. Use it.
+    // Re-deriving beat from an energy jump here would throw away the good
+    // signal and substitute the exact heuristic this design exists to avoid.
+    phoneOnset = phoneBeat != 0;
+    activeShader = phoneShader;
+    activeSource = SRC_PHONE;
+    heard = true;  // drives `presence`; the phone is our conductor
+
+    static uint32_t lastPhoneTxMs = 0;
+    static uint16_t phoneSeq = 0;
+    if (radioUp && (now - lastPhoneTxMs) >= CONDUCTOR_INTERVAL_MS) {
+      lastPhoneTxMs = now;
+      ChorusPacket pkt;
+      memcpy(pkt.magic, CHORUS_MAGIC, 4);
+      pkt.seq = phoneSeq++;
+      pkt.hop = 0;
+      pkt.shader = phoneShader;
+      for (int i = 0; i < FEAT_COUNT; i++) pkt.features[i] = target[i];
+      broadcast(pkt);
+    }
   } else if (!radioUp) {
     mockDjFeatures(now, target);
   } else {
@@ -504,6 +583,7 @@ void loop() {
     // No conductor in earshot: decay toward stillness rather than freezing on
     // the last packet, so a badge that walks out of range exhales.
     heard = rxSeen && (now - lastMs) <= FEATURE_STALE_MS;
+    activeSource = heard ? SRC_ESPNOW : SRC_NONE;
   }
 
   // Drain queued relays here, in loop context, where esp_now_send() is safe.
@@ -529,7 +609,15 @@ void loop() {
   in.treble = shown[FEAT_TREBLE];
   in.energy = shown[FEAT_ENERGY];
   in.time_ms = now;
-  in.beat = (shown[FEAT_ENERGY] - prevEnergy) > 0.25f ? 1 : 0;
+  // A conductor on the air can only express an onset by shaping energy, so for
+  // ESP-NOW we still infer it. A phone says so explicitly, and that is strictly
+  // better information -- prefer it whenever it is what is driving us.
+  if (activeSource == SRC_PHONE) {
+    in.beat = phoneOnset ? 1 : 0;
+    phoneOnset = false;  // an onset is one frame, not a level
+  } else {
+    in.beat = (shown[FEAT_ENERGY] - prevEnergy) > 0.25f ? 1 : 0;
+  }
   in.beat_env = shown[FEAT_ENERGY];
   prevEnergy = shown[FEAT_ENERGY];
 
@@ -542,11 +630,19 @@ void loop() {
   canvas.setTextDatum(middle_center);
   canvas.setTextSize(1);
   canvas.setTextColor(canvas.color888(255, 255, 255));
-  canvas.drawString(isConductor ? "CONDUCTOR" : (radioUp ? "RECEIVER" : "NO RADIO"), SCREEN_W / 2, 60);
+  const char *hudRole = isConductor                    ? "CONDUCTOR"
+                        : (activeSource == SRC_PHONE)  ? "PHONE"
+                        : !radioUp                     ? "NO RADIO"
+                        : (activeSource == SRC_ESPNOW) ? "RECEIVER"
+                                                       : "LISTENING";
+  canvas.drawString(hudRole, SCREEN_W / 2, 60);
   char hud[40];
   snprintf(hud, sizeof(hud), "%lu fps  rx:%lu", (unsigned long)fps, (unsigned long)rxCount);
   canvas.drawString(hud, SCREEN_W / 2, 180);
   canvas.drawString(effects_by_index(activeShader)->name, SCREEN_W / 2, 200);
+  if (phoneLinkUp && phoneLinkConnected() && activeSource != SRC_PHONE) {
+    canvas.drawString("phone standby", SCREEN_W / 2, 212);
+  }
 
   canvas.pushSprite(0, 0);
 
@@ -554,8 +650,15 @@ void loop() {
   frames++;
   if (now - lastReportMs >= 1000) {
     fps = frames * 1000 / (now - lastReportMs);
+    // Report what is actually driving this badge, not just how it booted: a
+    // badge conducting from a phone is neither a CONDUCTOR nor a RECEIVER, and
+    // labelling it wrong is how a log lies to whoever reads it next.
+    const char *sourceName = isConductor                    ? "CONDUCTOR"
+                             : (activeSource == SRC_PHONE)  ? "PHONE-LED"
+                             : (activeSource == SRC_ESPNOW) ? "RECEIVER"
+                                                            : "IDLE";
     Serial.printf("[badge] %s %lu fps | bass %.2f mid %.2f treble %.2f energy %.2f | rx %lu relay %lu | fx %s\n",
-                  isConductor ? "CONDUCTOR" : "RECEIVER", (unsigned long)fps,
+                  sourceName, (unsigned long)fps,
                   shown[FEAT_BASS], shown[FEAT_MID], shown[FEAT_TREBLE],
                   shown[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount,
                   effects_by_index(activeShader)->name);
@@ -586,6 +689,20 @@ void loop() {
       Serial.printf("[badge] heard%s | by hop: %lu/%lu/%lu/%lu/%lu\n", neighbours,
                     (unsigned long)hops[0], (unsigned long)hops[1], (unsigned long)hops[2],
                     (unsigned long)hops[3], (unsigned long)hops[4]);
+    }
+    if (phoneLinkUp) {
+      const uint8_t role = (activeSource == SRC_PHONE)    ? PHONE_ROLE_PHONE_LED
+                           : (activeSource == SRC_ESPNOW) ? PHONE_ROLE_RECEIVER
+                                                          : PHONE_ROLE_IDLE;
+      // Rates, as the contract says -- not totals. Cumulative counters cast to
+      // uint16 wrap every ~35 minutes at 31 pkt/s, and a phone showing a
+      // rewinding "rate" is worse than showing nothing.
+      static uint32_t prevRx = 0, prevTx = 0;
+      const uint16_t rxRate = (uint16_t)(rxCount - prevRx);
+      const uint16_t txRate = (uint16_t)(txOk - prevTx);
+      prevRx = rxCount;
+      prevTx = txOk;
+      phoneLinkPublishStatus(role, activeSource == SRC_ESPNOW, rxRate, txRate);
     }
     frames = 0;
     lastReportMs = now;

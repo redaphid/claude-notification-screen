@@ -154,7 +154,15 @@ void setup() {
   micOk = mic.begin();
   Serial.printf("[conductor] source: %s%s\n", mic.sourceName(), micOk ? "" : "  <-- FAILED");
 
+#ifdef CONDUCTOR_SILENT
+  // Bench flag: analyse and draw, but put nothing on the air. Used to hand the
+  // channel to another bench, or to test the phone-as-conductor path, which can
+  // only take over when no real conductor is transmitting.
+  radioOk = false;
+  Serial.println("[conductor] CONDUCTOR_SILENT -- analysing but not transmitting");
+#else
   radioOk = radio.begin();
+#endif
   if (!radioOk) {
     Serial.printf("[conductor] radio did not come up; analysing anyway, retrying every %d ms\n",
                   RADIO_RETRY_MS);
@@ -212,6 +220,7 @@ void loop() {
     radio.broadcast(currentShader, f.bass, f.mid, f.treble, f.energy);
     lastPacketMs = now;
     hopsSinceTx = 0;
+#ifndef CONDUCTOR_SILENT
   } else if (!radioOk && (now - lastRadioTryMs) >= (uint32_t)RADIO_RETRY_MS) {
     // A rail that sagged during the first bring-up may well be fine now. Keep
     // listening and analysing throughout; a mute conductor is recoverable, a
@@ -220,6 +229,7 @@ void loop() {
     Serial.println("[conductor] retrying radio bring-up");
     radioOk = radio.begin();
     lastPacketMs = now;
+#endif
   }
 
   // The panel is 412x412 over 40MHz QSPI, so a frame costs real time. Draw at
