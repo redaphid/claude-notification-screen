@@ -28,9 +28,16 @@ public:
       cfg.use_lock = true;
       cfg.dma_channel = SPI_DMA_CH_AUTO;
       cfg.pin_sclk = LCD_PIN_SCK;
-      cfg.pin_mosi = LCD_PIN_D0;
-      cfg.pin_miso = LCD_PIN_D1;
-      cfg.pin_dc = LCD_PIN_D2;  // QSPI: data lines 1..3 ride in these fields
+      // Quad SPI uses its own four pin fields. Setting all four is also what
+      // makes Bus_SPI select quad mode at all -- with pin_mosi/pin_dc instead
+      // it silently runs single-line and the panel never responds.
+      cfg.pin_io0 = LCD_PIN_D0;
+      cfg.pin_io1 = LCD_PIN_D1;
+      cfg.pin_io2 = LCD_PIN_D2;
+      cfg.pin_io3 = LCD_PIN_D3;
+      cfg.pin_mosi = -1;
+      cfg.pin_miso = -1;
+      cfg.pin_dc = -1;
       _bus.config(cfg);
       _panel.setBus(&_bus);
     }

@@ -41,6 +41,7 @@
 #include <Arduino.h>
 
 #include "conductor_config.h"
+#include "conductor_display.h"
 #include "dsp.h"
 #include "mic_source.h"
 #include "net_espnow.h"
@@ -65,6 +66,8 @@ static uint32_t lastRadioTryMs = 0;
 // and let bring-up confirm or refute it.
 static uint32_t analysisUsSum = 0;
 static uint32_t analysisUsMax = 0;
+static bool displayOk = false;
+static uint32_t displayFps = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -95,6 +98,13 @@ void setup() {
   lastReportMs = millis();
   lastShaderMs = millis();
   lastRadioTryMs = millis();
+
+  // The leader has a screen too. It shows what this board is hearing, so a
+  // silent mic or a mute radio is visible from across a room without a laptop.
+  displayOk = conductorDisplayInit();
+  if (!displayOk) {
+    Serial.println("[conductor] no display -- continuing headless, audio still runs");
+  }
 }
 
 void loop() {
@@ -145,6 +155,25 @@ void loop() {
     Serial.println("[conductor] retrying radio bring-up");
     radioOk = radio.begin();
     lastPacketMs = now;
+  }
+
+  // The panel is 412x412 over 40MHz QSPI, so a frame costs real time. Draw at
+  // a fixed cadence rather than once per analysis hop (62/s), which would eat
+  // the audio budget for frames nobody can perceive.
+  if (displayOk) {
+    static uint32_t lastDrawMs = 0;
+    static uint32_t drawFrames = 0, lastDrawReportMs = 0;
+    if (now - lastDrawMs >= 33) {
+      lastDrawMs = now;
+      const float feats[4] = {f.bass, f.mid, f.treble, f.energy};
+      conductorDisplayDraw(feats, f.onset ? 1 : 0, f.beatEnv, radio.sent(), displayFps);
+      drawFrames++;
+    }
+    if (now - lastDrawReportMs >= 1000) {
+      displayFps = drawFrames * 1000 / (now - lastDrawReportMs);
+      drawFrames = 0;
+      lastDrawReportMs = now;
+    }
   }
 
   if (now - lastReportMs >= (uint32_t)(1000 / SERIAL_REPORT_HZ)) {
