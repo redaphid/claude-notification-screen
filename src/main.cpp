@@ -64,6 +64,11 @@ static uint8_t rxShader = 0;
 // swarm is the hardest failure to diagnose in a field.
 static uint32_t txOk = 0, txFail = 0;
 
+// How far out of order a packet may be and still count as a straggler rather
+// than evidence that the conductor restarted. At 30Hz this is ~8s of history.
+static constexpr int16_t SEQ_REORDER_WINDOW = 256;
+static uint32_t resyncCount = 0;
+
 // Smoothed values actually handed to the visual. Asymmetric on purpose: fast
 // attack so a kick lands now, slow release so a dropped packet reads as a slow
 // exhale instead of a flicker.
@@ -120,12 +125,31 @@ static void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
   ChorusPacket pkt;
   memcpy(&pkt, data, sizeof(pkt));
 
+  // Dedupe, with an escape hatch for a conductor that restarted.
+  //
+  // Sequence numbers begin again at zero every time the conductor reboots --
+  // a battery swap, a reset, a crash, a reflash. A plain "is this newer?"
+  // test then rejects every packet until the counter climbs back past where
+  // it left off, which at 30Hz is over a minute of dead swarm for a conductor
+  // that had been running two minutes, and up to half an hour in the worst
+  // case. Measured on two boards: the badge froze at rx 2434 and stayed dark
+  // while the conductor happily transmitted.
+  //
+  // So a packet is also accepted when we have heard nothing recently (the
+  // conductor went away and came back) or when its sequence is far enough
+  // behind to be a new epoch rather than a reordered straggler. The narrow
+  // reorder window is what still suppresses relay storms.
+  const uint32_t nowMs = millis();
   portENTER_CRITICAL(&featureMux);
-  const bool fresh = !rxSeen || chorusSeqNewer(pkt.seq, rxLastSeq);
+  const int16_t seqDelta = (int16_t)(pkt.seq - rxLastSeq);
+  const bool silenceGap = (nowMs - rxLastMs) > FEATURE_STALE_MS;
+  const bool newEpoch = seqDelta < -SEQ_REORDER_WINDOW;
+  const bool fresh = !rxSeen || seqDelta > 0 || silenceGap || newEpoch;
+  if (fresh && (silenceGap || newEpoch)) resyncCount++;
   if (fresh) {
     rxLastSeq = pkt.seq;
     rxSeen = true;
-    rxLastMs = millis();
+    rxLastMs = nowMs;
     rxCount++;
     for (int i = 0; i < FEAT_COUNT; i++) rxFeatures[i] = pkt.features[i];
     rxShader = pkt.shader;
@@ -396,8 +420,9 @@ void loop() {
                   shown[FEAT_BASS], shown[FEAT_MID], shown[FEAT_TREBLE],
                   shown[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount);
     if (txOk || txFail) {
-      Serial.printf("[badge] tx ok %lu fail %lu | boot attempts %lu\n",
-                    (unsigned long)txOk, (unsigned long)txFail, (unsigned long)bootAttempts);
+      Serial.printf("[badge] tx ok %lu fail %lu | resyncs %lu | boot attempts %lu\n",
+                    (unsigned long)txOk, (unsigned long)txFail,
+                    (unsigned long)resyncCount, (unsigned long)bootAttempts);
     }
     if (relayDropped) Serial.printf("[badge] relay queue dropped %lu\n", (unsigned long)relayDropped);
     frames = 0;
