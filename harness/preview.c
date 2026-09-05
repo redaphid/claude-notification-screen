@@ -15,6 +15,7 @@
 //
 //   preview --effect plasma --frames 150 --fps 30 --out outputs/frames/plasma
 //   preview --effect iris --bench 400
+//   preview --effect lattice --variant 3 --frames 90 --out /tmp/f   (wear crest 3)
 //   preview --list
 #include <stdio.h>
 #include <stdlib.h>
@@ -102,7 +103,7 @@ static int check_round_mask(const uint16_t *fb) {
 static void usage(void) {
   fprintf(stderr,
           "usage: preview [--effect NAME] [--frames N] [--fps F] [--bpm B]\n"
-          "               [--out DIR] [--bench N] [--list]\n");
+          "               [--out DIR] [--bench N] [--variant V] [--list]\n");
 }
 
 int main(int argc, char **argv) {
@@ -112,6 +113,7 @@ int main(int argc, char **argv) {
   double fps = 30.0;
   float bpm = 118.0f;
   int bench = 0;
+  int variant = -1;
 
   for (int i = 1; i < argc; ++i) {
     if (!strcmp(argv[i], "--list")) {
@@ -129,6 +131,8 @@ int main(int argc, char **argv) {
       bpm = (float)atof(argv[++i]);
     } else if (!strcmp(argv[i], "--bench") && i + 1 < argc) {
       bench = atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--variant") && i + 1 < argc) {
+      variant = atoi(argv[++i]);  // crest for the mon-family effects; -1 cycles
     } else {
       usage();
       return 2;
@@ -152,6 +156,7 @@ int main(int argc, char **argv) {
   memset(fb, 0xAA, (size_t)EFFECT_PIXELS * sizeof(uint16_t));  // poison: render must
                                                                // write every pixel
 
+  mon_select(variant);  // which crest the mon-family effects wear (-1: cycle)
   fx->init();
 
   MockDj dj;

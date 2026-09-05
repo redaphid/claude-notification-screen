@@ -55,6 +55,10 @@ static const uint8_t MON_HUE[MON_COUNT] = {
 };
 
 void mon_select(int variant) { s_variant = variant; }
+int mon_selected(void) { return s_variant; }
+uint8_t mon_hue(int variant) {
+  return (variant >= 0 && variant < MON_COUNT) ? MON_HUE[variant] : MON_HUE[0];
+}
 int mon_variant_count(void) { return MON_COUNT; }
 const char *mon_variant_name(int variant) {
   return (variant >= 0 && variant < MON_COUNT) ? mon_names[variant] : "auto";
