@@ -276,7 +276,14 @@ static bool espNowInit() {
 #define BADGE_TX_POWER WIFI_POWER_11dBm
 #endif
   WiFi.setTxPower(BADGE_TX_POWER);
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  // Channel 1 everywhere, because nothing negotiates at camp: a badge on a
+  // different channel from its conductor is simply deaf, with no error to say
+  // why. Overridable only for bench isolation, when two benches within radio
+  // range would otherwise count each other's packets.
+#ifndef BADGE_WIFI_CHANNEL
+#define BADGE_WIFI_CHANNEL 1
+#endif
+  esp_wifi_set_channel(BADGE_WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
   setCpuFrequencyMhz(cpuBefore);
 
@@ -289,14 +296,14 @@ static bool espNowInit() {
 
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BROADCAST_ADDR, 6);
-  peer.channel = 1;
+  peer.channel = BADGE_WIFI_CHANNEL;
   peer.encrypt = false;
   if (esp_now_add_peer(&peer) != ESP_OK) {
     Serial.println("[badge] add broadcast peer FAILED");
     return false;
   }
 
-  Serial.printf("[badge] ESP-NOW up, channel 1, tx %ddBm, mac %s\n",
+  Serial.printf("[badge] ESP-NOW up, channel %d, tx %ddBm, mac %s\n", BADGE_WIFI_CHANNEL,
                 (int)WiFi.getTxPower() / 4, WiFi.macAddress().c_str());
   return true;
 }
@@ -477,7 +484,7 @@ void loop() {
     // No conductor in earshot: decay toward stillness rather than freezing on
     // the last packet, so a badge that walks out of range exhales.
     heard = rxSeen && (now - lastMs) <= FEATURE_STALE_MS;
-    if (heard) activeSource = SRC_ESPNOW;
+    activeSource = heard ? SRC_ESPNOW : SRC_NONE;
   }
 
   // Drain queued relays here, in loop context, where esp_now_send() is safe.
@@ -516,13 +523,18 @@ void loop() {
   canvas.setTextDatum(middle_center);
   canvas.setTextSize(1);
   canvas.setTextColor(canvas.color888(255, 255, 255));
-  canvas.drawString(isConductor ? "CONDUCTOR" : (radioUp ? "RECEIVER" : "NO RADIO"), SCREEN_W / 2, 60);
+  const char *hudRole = isConductor                    ? "CONDUCTOR"
+                        : (activeSource == SRC_PHONE)  ? "PHONE"
+                        : !radioUp                     ? "NO RADIO"
+                        : (activeSource == SRC_ESPNOW) ? "RECEIVER"
+                                                       : "LISTENING";
+  canvas.drawString(hudRole, SCREEN_W / 2, 60);
   char hud[40];
   snprintf(hud, sizeof(hud), "%lu fps  rx:%lu", (unsigned long)fps, (unsigned long)rxCount);
   canvas.drawString(hud, SCREEN_W / 2, 180);
   canvas.drawString(effects_by_index(activeShader)->name, SCREEN_W / 2, 200);
-  if (phoneLinkUp && phoneLinkConnected()) {
-    canvas.drawString(activeSource == SRC_PHONE ? "PHONE" : "PHONE (standby)", SCREEN_W / 2, 212);
+  if (phoneLinkUp && phoneLinkConnected() && activeSource != SRC_PHONE) {
+    canvas.drawString("phone standby", SCREEN_W / 2, 212);
   }
 
   canvas.pushSprite(0, 0);
@@ -531,8 +543,15 @@ void loop() {
   frames++;
   if (now - lastReportMs >= 1000) {
     fps = frames * 1000 / (now - lastReportMs);
+    // Report what is actually driving this badge, not just how it booted: a
+    // badge conducting from a phone is neither a CONDUCTOR nor a RECEIVER, and
+    // labelling it wrong is how a log lies to whoever reads it next.
+    const char *sourceName = isConductor              ? "CONDUCTOR"
+                             : (activeSource == SRC_PHONE)  ? "PHONE-LED"
+                             : (activeSource == SRC_ESPNOW) ? "RECEIVER"
+                                                            : "IDLE";
     Serial.printf("[badge] %s %lu fps | bass %.2f mid %.2f treble %.2f energy %.2f | rx %lu relay %lu\n",
-                  isConductor ? "CONDUCTOR" : "RECEIVER", (unsigned long)fps,
+                  sourceName, (unsigned long)fps,
                   shown[FEAT_BASS], shown[FEAT_MID], shown[FEAT_TREBLE],
                   shown[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount);
     if (txOk || txFail) {
