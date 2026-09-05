@@ -95,6 +95,125 @@ static void setShader(int index) {
                 effects_all[currentShader]->name);
 }
 
+// --- addressing one badge -----------------------------------------------
+// A badge answers to the last three bytes of its MAC, printed as six hex digits
+// on its own serial line ("[badge] id 85dcdc"). "all" is the whole swarm.
+static bool parseBadgeId(const String &text, uint8_t out[3]) {
+  if (text == "all" || text == "*") {
+    out[0] = out[1] = out[2] = 0;
+    return true;
+  }
+  if (text.length() != 6) return false;
+  uint32_t v = 0;
+  for (int i = 0; i < 6; i++) {
+    const char c = text[i];
+    uint8_t nib;
+    if (c >= '0' && c <= '9') nib = (uint8_t)(c - '0');
+    else if (c >= 'a' && c <= 'f') nib = (uint8_t)(c - 'a' + 10);
+    else return false;
+    v = (v << 4) | nib;
+  }
+  chorusTailToId(v, out);
+  return true;
+}
+
+// Effect by name or index, so the console and the phone agree on what "chroma"
+// means without either hardcoding a number.
+static int parseEffect(const String &text) {
+  for (int i = 0; i < effects_count; i++) {
+    if (text == effects_all[i]->name) return i;
+  }
+  if (!text.isEmpty() && isDigit(text[0])) {
+    const int n = text.toInt();
+    if (n >= 0 && n < effects_count) return n;
+  }
+  return -1;
+}
+
+static void printRoster() {
+  radio.rosterExpire(ROSTER_STALE_MS);
+  const int n = radio.rosterCount();
+  Serial.printf("[swarm] %d badge%s\n", n, n == 1 ? "" : "s");
+  const uint32_t now = millis();
+  for (int i = 0; i < n; i++) {
+    const ChorusRadio::RosterEntry *e = radio.rosterAt(i);
+    if (!e) continue;
+    Serial.printf("  %02x%02x%02x  %-8s %s  %3u fps  rx %3u/s  hop %u  up %us  %lus ago\n", e->id[0],
+                  e->id[1], e->id[2],
+                  (e->shader < (uint8_t)effects_count) ? effects_all[e->shader]->name : "?",
+                  (e->flags & HELLO_PINNED) ? "PIN " : "    ", (unsigned)e->fps,
+                  (unsigned)e->rxPerSec, (unsigned)e->hop, (unsigned)e->uptimeS,
+                  (unsigned long)((now - e->lastSeenMs) / 1000));
+  }
+}
+
+// Verbs that address the swarm rather than the leader. Split out from
+// handleSerialLine so the BLE console can call exactly the same code and the
+// two can never drift into meaning different things.
+//   who                     list the badges heard from
+//   pin <id|all> <effect>   hold a badge on one visual
+//   free <id|all>           let it follow the leader again
+//   find <id|all> [secs]    pulse a white ring so it can be spotted
+//   dim <id|all> <0-255>    backlight
+//   rollcall                ask every badge to announce itself now
+static bool handleSwarmCommand(const String &line) {
+  if (line == "who" || line == "roster") {
+    printRoster();
+    return true;
+  }
+  if (line == "rollcall") {
+    const uint8_t all[3] = {0, 0, 0};
+    radio.command(CMD_ROLL_CALL, all);
+    Serial.println("[swarm] roll call sent");
+    return true;
+  }
+  int sp = line.indexOf(' ');
+  if (sp < 0) return false;
+  const String verb = line.substring(0, sp);
+  String rest = line.substring(sp + 1);
+  rest.trim();
+  sp = rest.indexOf(' ');
+  const String who = (sp < 0) ? rest : rest.substring(0, sp);
+  String arg = (sp < 0) ? String("") : rest.substring(sp + 1);
+  arg.trim();
+
+  uint8_t target[3];
+  if (verb != "pin" && verb != "free" && verb != "find" && verb != "dim") return false;
+  if (!parseBadgeId(who, target)) {
+    Serial.printf("[swarm] '%s' is not a badge id (six hex digits, or 'all')\n", who.c_str());
+    return true;
+  }
+
+  if (verb == "pin") {
+    const int fx = parseEffect(arg);
+    if (fx < 0) {
+      Serial.printf("[swarm] no effect '%s' (try ? for the list)\n", arg.c_str());
+      return true;
+    }
+    radio.command(CMD_SET_EFFECT, target, (uint8_t)fx, 0);
+    Serial.printf("[swarm] %s -> %s (held until freed)\n", who.c_str(), effects_all[fx]->name);
+    return true;
+  }
+  if (verb == "free") {
+    radio.command(CMD_RELEASE, target);
+    Serial.printf("[swarm] %s follows the leader again\n", who.c_str());
+    return true;
+  }
+  if (verb == "find") {
+    const uint8_t secs = arg.isEmpty() ? 5 : (uint8_t)constrain(arg.toInt(), 1, 60);
+    radio.command(CMD_IDENTIFY, target, secs);
+    Serial.printf("[swarm] %s pulsing for %us\n", who.c_str(), (unsigned)secs);
+    return true;
+  }
+  if (verb == "dim") {
+    const uint8_t v = (uint8_t)constrain(arg.toInt(), 0, 255);
+    radio.command(CMD_BRIGHTNESS, target, v);
+    Serial.printf("[swarm] %s brightness %u\n", who.c_str(), (unsigned)v);
+    return true;
+  }
+  return false;
+}
+
 static void handleSerialLine(String line) {
   line.trim();
   line.toLowerCase();
@@ -103,8 +222,11 @@ static void handleSerialLine(String line) {
     Serial.printf("[conductor] shader %u of %d:", (unsigned)currentShader, effects_count);
     for (int i = 0; i < effects_count; i++) Serial.printf(" %d=%s", i, effects_all[i]->name);
     Serial.printf("  cycle=%lu ms\n", (unsigned long)shaderCycleMs);
+    Serial.println("[conductor] swarm: who | rollcall | pin <id|all> <fx> | free <id|all>");
+    Serial.println("[conductor]        find <id|all> [secs] | dim <id|all> <0-255>");
     return;
   }
+  if (handleSwarmCommand(line)) return;
   if (line == "next" || line == "n") { setShader(currentShader + 1); return; }
   if (line == "prev" || line == "p") { setShader(currentShader - 1); return; }
   if (line.startsWith("cycle")) {

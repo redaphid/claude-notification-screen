@@ -13,6 +13,7 @@
 #include <esp_system.h>
 #include <math.h>
 
+#include "chorus_command.h"
 #include "chorus_packet.h"
 #include "display.h"
 #include "effects.h"
@@ -147,6 +148,55 @@ static ChorusPacket relayQueue[RELAY_QUEUE_LEN];
 static volatile uint8_t relayHead = 0, relayTail = 0;
 static uint32_t relayDropped = 0;
 
+// --- remote control ------------------------------------------------------
+// Commands and roster beacons are 16 bytes and rare, so they ride a second,
+// shorter ring rather than widening the one the music uses. Same reason as the
+// music ring: esp_now_send() must not be called from the receive callback.
+struct AuxFrame {
+  uint8_t len;
+  uint8_t bytes[sizeof(ChorusCommand) > sizeof(ChorusHello) ? sizeof(ChorusCommand)
+                                                            : sizeof(ChorusHello)];
+};
+static constexpr int AUX_QUEUE_LEN = 6;
+static AuxFrame auxQueue[AUX_QUEUE_LEN];
+static volatile uint8_t auxHead = 0, auxTail = 0;
+static uint32_t auxDropped = 0;
+
+// This badge's name on the air: the last three bytes of its STA MAC.
+static uint8_t myId[3] = {0, 0, 0};
+// Which crest this badge wears, remembered so the roster beacon can say so.
+static int myCrest = 0;
+
+// A pin from a phone. Outranks the conductor's shader byte and outranks
+// BADGE_LOCK_EFFECT -- see the note on CMD_SET_EFFECT in chorus_command.h.
+static volatile bool pinned = false;
+static volatile uint8_t pinnedShader = 0;
+static volatile uint32_t pinUntilMs = 0;  // 0 == until released
+static volatile uint32_t identifyUntilMs = 0;
+static volatile uint8_t requestedBrightness = 255;
+static uint8_t appliedBrightness = 255;
+// A roll call answered by thirty badges in the same millisecond is thirty
+// collisions. Each badge waits a slice of a second derived from its own MAC.
+static volatile uint32_t helloDueMs = 0;
+static uint16_t cmdLastSeq = 0;
+static bool cmdSeen = false;
+static uint32_t cmdCount = 0;
+static uint8_t helloSeq = 0;
+static uint32_t helloSent = 0;
+static uint32_t helloFps = 0;
+static uint32_t helloRxPerSec = 0;
+
+// Dedupe for relayed beacons: one slot per badge we have heard from, holding
+// the last hello sequence seen. Without it a hello ping-pongs between two
+// badges that can both hear each other.
+static constexpr int HELLO_SEEN_MAX = 24;
+struct HelloSeen {
+  uint8_t id[3];
+  uint8_t seq;
+  bool used;
+};
+static HelloSeen helloSeen[HELLO_SEEN_MAX];
+
 // Values handed to the visual. Deliberately NOT smoothed: the conductor already
 // ships designed attack-decay envelopes, and filtering them again here would
 // reintroduce exactly the lag that shaping them was meant to remove. The only
@@ -272,6 +322,7 @@ static void monSelectForThisBadge() {
   }
   if (variant < 0) variant = (int)((tail * 2654435761u) >> 8) % mon_variant_count();
   mon_select(variant);
+  myCrest = variant;
   Serial.printf("[badge] crest: %s (mon variant %d)\n", mon_variant_name(variant), variant);
 }
 
@@ -284,6 +335,74 @@ static void broadcast(const ChorusPacket &pkt) {
   esp_now_send(BROADCAST_ADDR, (const uint8_t *)&pkt, sizeof(pkt));
 }
 
+static void broadcastRaw(const void *frame, size_t len) {
+  if (!radioUp) return;
+  esp_now_send(BROADCAST_ADDR, (const uint8_t *)frame, len);
+}
+
+// Queue a 16-byte frame for retransmission from loop context.
+static void auxEnqueue(const void *frame, uint8_t len) {
+  const uint8_t next = (uint8_t)((auxHead + 1) % AUX_QUEUE_LEN);
+  if (next == auxTail) {
+    auxDropped++;
+    return;
+  }
+  auxQueue[auxHead].len = len;
+  memcpy(auxQueue[auxHead].bytes, frame, len);
+  auxHead = next;
+}
+
+// Has this beacon already been through here? Returns true the first time only.
+static bool helloIsNew(const ChorusHello &h) {
+  for (int i = 0; i < HELLO_SEEN_MAX; i++) {
+    if (!helloSeen[i].used || !chorusIdEq(helloSeen[i].id, h.id)) continue;
+    // A badge that reboots restarts its hello counter, so an exactly-equal
+    // sequence is the only thing treated as a duplicate. Anything else is news.
+    if (helloSeen[i].seq == h.seq) return false;
+    helloSeen[i].seq = h.seq;
+    return true;
+  }
+  for (int i = 0; i < HELLO_SEEN_MAX; i++) {
+    if (helloSeen[i].used) continue;
+    memcpy(helloSeen[i].id, h.id, 3);
+    helloSeen[i].seq = h.seq;
+    helloSeen[i].used = true;
+    return true;
+  }
+  return true;  // table full: relay it rather than silence a badge
+}
+
+// Apply a command aimed at this badge. Called from the WiFi task, so it only
+// sets flags that loop() reads -- nothing here touches the panel or the radio.
+static void applyCommand(const ChorusCommand &c) {
+  const uint32_t now = millis();
+  switch (c.op) {
+    case CMD_SET_EFFECT:
+      if (c.arg0 < (uint8_t)effects_count) {
+        pinnedShader = c.arg0;
+        pinUntilMs = c.arg1 ? now + (uint32_t)c.arg1 * 1000u : 0;
+        pinned = true;
+      }
+      break;
+    case CMD_RELEASE:
+      pinned = false;
+      pinUntilMs = 0;
+      break;
+    case CMD_IDENTIFY:
+      identifyUntilMs = now + (uint32_t)(c.arg0 ? c.arg0 : 3) * 1000u;
+      break;
+    case CMD_BRIGHTNESS:
+      requestedBrightness = c.arg0;
+      break;
+    case CMD_ROLL_CALL:
+      // Spread the answers across a second so the replies do not collide.
+      helloDueMs = now + (uint32_t)(chorusIdToTail(myId) % 900u);
+      break;
+    default:
+      break;
+  }
+}
+
 static void onEspNowSent(const uint8_t *mac, esp_now_send_status_t status) {
   if (status == ESP_NOW_SEND_SUCCESS) {
     txOk++;
@@ -293,6 +412,38 @@ static void onEspNowSent(const uint8_t *mac, esp_now_send_status_t status) {
 }
 
 static void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
+  // Commands and beacons share the air with the music but not its frame: they
+  // are 16 bytes with their own magic, so an old badge drops them and a new one
+  // handles them here, before the feature path gets a look.
+  if (chorusCommandValid(data, len)) {
+    ChorusCommand c;
+    memcpy(&c, data, sizeof(c));
+    const int16_t d = (int16_t)(c.seq - cmdLastSeq);
+    const bool fresh = !cmdSeen || d > 0 || d < -SEQ_REORDER_WINDOW;
+    if (!fresh) return;  // already seen down another path
+    cmdLastSeq = c.seq;
+    cmdSeen = true;
+    cmdCount++;
+    if (chorusIdIsBroadcast(c.target) || chorusIdEq(c.target, myId)) applyCommand(c);
+    // Relay regardless of who it was for: the badge it was aimed at may only be
+    // reachable through this one.
+    if (c.hop < CHORUS_CMD_MAX_HOP) {
+      c.hop++;
+      auxEnqueue(&c, sizeof(c));
+    }
+    return;
+  }
+  if (chorusHelloValid(data, len)) {
+    ChorusHello h;
+    memcpy(&h, data, sizeof(h));
+    if (chorusIdEq(h.id, myId)) return;  // our own beacon, come back around
+    if (!helloIsNew(h)) return;
+    if (h.hop < CHORUS_HELLO_MAX_HOP) {
+      h.hop++;
+      auxEnqueue(&h, sizeof(h));
+    }
+    return;
+  }
   if (!chorusPacketValid(data, len)) return;
   ChorusPacket pkt;
   memcpy(&pkt, data, sizeof(pkt));
@@ -474,6 +625,16 @@ void setup() {
 
   pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
   delay(10);
+
+  {
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    myId[0] = mac[3];
+    myId[1] = mac[4];
+    myId[2] = mac[5];
+    helloDueMs = 2000 + (chorusIdToTail(myId) % 1800u);
+    Serial.printf("[badge] id %02x%02x%02x\n", myId[0], myId[1], myId[2]);
+  }
 #ifdef BADGE_FORCE_CONDUCTOR
   // Bench builds: nobody is in the room to hold BOOT down at reset.
   isConductor = true;
@@ -540,9 +701,87 @@ void setup() {
                 (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
 }
 
+// --- the button on the back --------------------------------------------
+// Held at reset it picks the conductor role (see setup). While the badge is
+// running it is the only control a wearer has, so it does the two things
+// somebody actually wants at 2am in a field:
+//
+//   tap        next effect, and stay on it -- the same pin a phone would set
+//   hold 1.2s  let go, follow the leader again
+//
+// A tap pins deliberately. A badge whose wearer picked a visual should keep it
+// even though the conductor is still shouting a different shader thirty times a
+// second; anything else makes the button look broken.
+static constexpr uint32_t BUTTON_HOLD_MS = 1200;
+static const char *toastText = nullptr;
+static uint32_t toastUntilMs = 0;
+
+static void toast(const char *text, uint32_t ms = 1500) {
+  toastText = text;
+  toastUntilMs = millis() + ms;
+}
+
+static void pollButton(uint32_t now) {
+  static bool wasDown = false;
+  static uint32_t downAtMs = 0;
+  static bool heldFired = false;
+  const bool down = digitalRead(PIN_BOOT_BUTTON) == LOW;
+
+  if (down && !wasDown) {
+    downAtMs = now;
+    heldFired = false;
+  } else if (down && !heldFired && (now - downAtMs) >= BUTTON_HOLD_MS) {
+    // Fire the hold as soon as it is long enough, not on release: the wearer
+    // gets the feedback while their thumb is still on the button.
+    heldFired = true;
+    pinned = false;
+    pinUntilMs = 0;
+    toast("following leader");
+    Serial.println("[badge] button: hold -> release pin, follow the leader");
+  } else if (!down && wasDown && !heldFired) {
+    const uint32_t heldMs = now - downAtMs;
+    if (heldMs >= 40) {  // anything shorter is contact bounce, not a person
+      const uint8_t from = pinned ? pinnedShader : activeShader;
+      pinnedShader = (uint8_t)((from + 1) % effects_count);
+      pinUntilMs = 0;
+      pinned = true;
+      toast(effects_by_index(pinnedShader)->name);
+      Serial.printf("[badge] button: tap -> effect %u (%s)\n", (unsigned)pinnedShader,
+                    effects_by_index(pinnedShader)->name);
+    }
+  }
+  wasDown = down;
+}
+
+// --- roster beacon -------------------------------------------------------
+// Every badge says who it is and what it is showing, so the leader can offer a
+// list to a phone instead of the phone having to know the swarm in advance.
+// Once every HELLO_INTERVAL_MS, phase-offset by MAC so the swarm does not all
+// speak on the same tick.
+static constexpr uint32_t HELLO_INTERVAL_MS = 2000;
+
+static void sendHello(uint32_t now, uint32_t fps, uint32_t rxPerSec, bool hearing) {
+  ChorusHello h = {};
+  memcpy(h.magic, CHORUS_HELLO_MAGIC, 4);
+  memcpy(h.id, myId, 3);
+  h.seq = helloSeq++;
+  h.shader = activeShader;
+  h.flags = (uint8_t)((pinned ? HELLO_PINNED : 0) | (hearing ? HELLO_HEARING : 0) |
+                      (isConductor ? HELLO_CONDUCTING : 0) |
+                      ((now < identifyUntilMs) ? HELLO_IDENTIFYING : 0));
+  h.fps = (uint8_t)(fps > 255 ? 255 : fps);
+  h.crest = (uint8_t)myCrest;
+  h.uptimeS = (uint16_t)(now / 1000u);
+  h.hop = 0;
+  h.rxPerSec = (uint8_t)(rxPerSec > 255 ? 255 : rxPerSec);
+  broadcastRaw(&h, sizeof(h));
+  helloSent++;
+}
+
 void loop() {
   const uint32_t now = millis();
   pollSerial();
+  pollButton(now);
 
   // --- conductor: analyse (for now, pretend to) and broadcast ---
   static uint32_t lastSendMs = 0;
@@ -611,11 +850,42 @@ void loop() {
 #endif
   }
 
+  // A pin -- from the button on the back or from a phone by way of the leader
+  // -- is the last word on what this badge shows. It sits outside the
+  // source-selection branches above on purpose, so it wins for a conductor, a
+  // receiver and a BADGE_LOCK_EFFECT bag build alike: the lock chooses a
+  // badge's default, it does not forbid a human from changing their mind.
+  if (pinned && pinUntilMs != 0 && (int32_t)(now - pinUntilMs) >= 0) {
+    pinned = false;
+    pinUntilMs = 0;
+  }
+  if (pinned) activeShader = pinnedShader;
+
   // Drain queued relays here, in loop context, where esp_now_send() is safe.
   while (relayTail != relayHead) {
     broadcast(relayQueue[relayTail]);
     relayTail = (uint8_t)((relayTail + 1) % RELAY_QUEUE_LEN);
     relayCount++;
+  }
+
+  // Same rule for commands and beacons passing through.
+  while (auxTail != auxHead) {
+    broadcastRaw(auxQueue[auxTail].bytes, auxQueue[auxTail].len);
+    auxTail = (uint8_t)((auxTail + 1) % AUX_QUEUE_LEN);
+  }
+
+  // Say who we are, on our own clock, phase-offset by MAC so thirty badges do
+  // not all beacon on the same tick. A roll call can bring this forward.
+  if (radioUp && (int32_t)(now - helloDueMs) >= 0) {
+    sendHello(now, helloFps, helloRxPerSec, heard);
+    helloDueMs = now + HELLO_INTERVAL_MS;
+  }
+
+  // Backlight changes are a panel call, so they happen here rather than in the
+  // receive callback that asked for them.
+  if (requestedBrightness != appliedBrightness) {
+    appliedBrightness = requestedBrightness;
+    display.setBrightness(appliedBrightness);
   }
 
   // Presence, not smoothing: a badge that can still hear the conductor shows
@@ -668,6 +938,25 @@ void loop() {
   if (phoneLinkUp && phoneLinkConnected() && activeSource != SRC_PHONE) {
     canvas.drawString("phone standby", SCREEN_W / 2, 212);
   }
+  if (pinned) canvas.drawString("pinned", SCREEN_W / 2, 224);
+
+  // Identify: pulse a white ring so one badge stands out in a crowd of thirty
+  // in the dark. A ring rather than a filled screen -- the effect stays legible
+  // underneath, so it is obvious the badge is alive and merely answering.
+  if (now < identifyUntilMs) {
+    const float phase = (float)((now % 500) / 500.0f);
+    const int r = (int)(SCREEN_W / 2 - 4 - phase * 24.0f);
+    const uint8_t v = (uint8_t)(255.0f * (1.0f - phase));
+    canvas.drawCircle(SCREEN_W / 2, SCREEN_H / 2, r, canvas.color888(v, v, v));
+    canvas.drawCircle(SCREEN_W / 2, SCREEN_H / 2, r - 1, canvas.color888(v, v, v));
+  }
+
+  // A tap on the back button has to say something, or it looks broken.
+  if (toastText && now < toastUntilMs) {
+    canvas.setTextSize(2);
+    canvas.drawString(toastText, SCREEN_W / 2, SCREEN_H / 2);
+    canvas.setTextSize(1);
+  }
 
   canvas.pushSprite(0, 0);
 
@@ -693,6 +982,12 @@ void loop() {
                     (unsigned long)resyncCount, (unsigned long)bootAttempts);
     }
     if (relayDropped) Serial.printf("[badge] relay queue dropped %lu\n", (unsigned long)relayDropped);
+    if (auxDropped) Serial.printf("[badge] command queue dropped %lu\n", (unsigned long)auxDropped);
+    if (cmdCount || helloSent) {
+      Serial.printf("[badge] id %02x%02x%02x | commands %lu | hellos %lu | %s\n", myId[0], myId[1],
+                    myId[2], (unsigned long)cmdCount, (unsigned long)helloSent,
+                    pinned ? "PINNED" : "following");
+    }
 
     // Neighbour table: who this badge is hearing, and at what hop distance.
     // Reported every second alongside the counters so a multi-bench test can be
@@ -729,6 +1024,12 @@ void loop() {
       prevTx = txOk;
       phoneLinkPublishStatus(role, activeSource == SRC_ESPNOW, rxRate, txRate);
     }
+    // The rx rate the roster beacon reports, measured over this same second.
+    static uint32_t prevRxForHello = 0;
+    helloRxPerSec = rxCount - prevRxForHello;
+    prevRxForHello = rxCount;
+    helloFps = fps;
+
     frames = 0;
     lastReportMs = now;
     if (bootAttempts && now > 3000) {

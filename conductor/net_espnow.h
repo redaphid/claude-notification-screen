@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include "chorus_command.h"
 #include "chorus_packet.h"
 #include "conductor_config.h"
 
@@ -20,6 +21,13 @@ class ChorusRadio {
   // Fills in magic/seq/hop and sends. Returns false if the send was rejected.
   bool broadcast(uint8_t shader, float bass, float mid, float treble, float energy);
 
+  // Address one badge, or the whole swarm with a {0,0,0} target. Commands are
+  // rare and unacknowledged, so they go out CHORUS_CMD_REPEATS times: a single
+  // lost frame would otherwise mean a button on a phone that silently did
+  // nothing, which is worse than the airtime.
+  bool command(uint8_t op, const uint8_t target[3], uint8_t arg0 = 0, uint8_t arg1 = 0,
+               uint8_t arg2 = 0);
+
   uint16_t seq() const { return _seq; }
   uint32_t sent() const { return _sent; }
   uint32_t sendFailures() const { return _failures; }
@@ -27,6 +35,30 @@ class ChorusRadio {
   // A non-zero count is proof the mesh is alive without anyone walking the site.
   static uint32_t echoesHeard();
   static uint8_t lastEchoHop();
+
+  // --- the roster ---------------------------------------------------------
+  // Every badge beacons who it is and what it is showing (ChorusHello). The
+  // leader keeps the last one heard from each, so a phone can be handed a list
+  // of the swarm rather than having to know it in advance. Best-effort by
+  // design: a missed beacon costs a badge two seconds of staleness, nothing
+  // more, and a roll call brings everyone back at once.
+  struct RosterEntry {
+    uint8_t id[3];
+    uint8_t shader;
+    uint8_t flags;  // ChorusHelloFlag
+    uint8_t fps;
+    uint8_t crest;
+    uint8_t hop;
+    uint8_t rxPerSec;
+    uint16_t uptimeS;
+    uint32_t lastSeenMs;
+  };
+  static constexpr int ROSTER_MAX = 40;
+  static int rosterCount();
+  static const RosterEntry *rosterAt(int i);
+  // Drop badges not heard from in this long, so a roster on a phone reflects
+  // who is actually in the field rather than who was here an hour ago.
+  static void rosterExpire(uint32_t olderThanMs);
 
  private:
   bool bringUp();

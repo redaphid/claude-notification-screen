@@ -11,6 +11,81 @@ static const uint8_t kBroadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static volatile uint32_t s_echoes = 0;
 static volatile uint8_t s_lastEchoHop = 0;
 
+// The roster. Written from the WiFi task in onRecv and read from the main loop
+// and (in the BLE build) from the NimBLE task, so it takes a spinlock. Entries
+// are 16 bytes of news every two seconds per badge; forty of them is 320 bytes
+// a second of air, which is a fifth of what the music already costs.
+static portMUX_TYPE s_rosterMux = portMUX_INITIALIZER_UNLOCKED;
+static ChorusRadio::RosterEntry s_roster[ChorusRadio::ROSTER_MAX];
+static int s_rosterCount = 0;
+static uint16_t s_cmdSeq = 0;
+
+// A command is unacknowledged and rare. Sending it three times costs 48 bytes
+// and removes almost all of the chance that a single collision loses it.
+static constexpr int CHORUS_CMD_REPEATS = 3;
+
+static void rosterNote(const ChorusHello &h) {
+  portENTER_CRITICAL(&s_rosterMux);
+  int slot = -1;
+  for (int i = 0; i < s_rosterCount; i++) {
+    if (chorusIdEq(s_roster[i].id, h.id)) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot < 0) {
+    if (s_rosterCount < ChorusRadio::ROSTER_MAX) {
+      slot = s_rosterCount++;
+    } else {
+      // Full: replace the stalest entry rather than ignoring a new badge.
+      uint32_t oldest = 0xFFFFFFFFu;
+      for (int i = 0; i < s_rosterCount; i++) {
+        if (s_roster[i].lastSeenMs < oldest) {
+          oldest = s_roster[i].lastSeenMs;
+          slot = i;
+        }
+      }
+    }
+  }
+  ChorusRadio::RosterEntry &e = s_roster[slot];
+  memcpy(e.id, h.id, 3);
+  e.shader = h.shader;
+  e.flags = h.flags;
+  e.fps = h.fps;
+  e.crest = h.crest;
+  e.hop = h.hop;
+  e.rxPerSec = h.rxPerSec;
+  e.uptimeS = h.uptimeS;
+  e.lastSeenMs = millis();
+  portEXIT_CRITICAL(&s_rosterMux);
+}
+
+int ChorusRadio::rosterCount() {
+  portENTER_CRITICAL(&s_rosterMux);
+  const int n = s_rosterCount;
+  portEXIT_CRITICAL(&s_rosterMux);
+  return n;
+}
+
+const ChorusRadio::RosterEntry *ChorusRadio::rosterAt(int i) {
+  if (i < 0 || i >= s_rosterCount) return nullptr;
+  return &s_roster[i];
+}
+
+void ChorusRadio::rosterExpire(uint32_t olderThanMs) {
+  const uint32_t now = millis();
+  portENTER_CRITICAL(&s_rosterMux);
+  int out = 0;
+  for (int i = 0; i < s_rosterCount; i++) {
+    if (now - s_roster[i].lastSeenMs <= olderThanMs) {
+      if (out != i) s_roster[out] = s_roster[i];
+      out++;
+    }
+  }
+  s_rosterCount = out;
+  portEXIT_CRITICAL(&s_rosterMux);
+}
+
 // Arduino core 2.0.11's esp_now.h declares:
 //   typedef void (*esp_now_recv_cb_t)(const uint8_t *mac_addr,
 //                                     const uint8_t *data, int data_len);
@@ -19,6 +94,15 @@ static volatile uint8_t s_lastEchoHop = 0;
 // remembered.
 static void onRecv(const uint8_t *mac, const uint8_t *data, int len) {
   (void)mac;
+  // Roster beacons: 16 bytes with their own magic, so they never reach the
+  // feature path and a leader running older firmware simply drops them.
+  if (chorusHelloValid(data, len)) {
+    ChorusHello h;
+    memcpy(&h, data, sizeof(h));
+    rosterNote(h);
+    return;
+  }
+  if (chorusCommandValid(data, len)) return;  // our own command, relayed back
   if (!chorusPacketValid(data, len)) return;
   ChorusPacket p;
   memcpy(&p, data, sizeof(p));
@@ -125,4 +209,25 @@ bool ChorusRadio::broadcast(uint8_t shader, float bass, float mid, float treble,
   }
   _sent++;
   return true;
+}
+
+bool ChorusRadio::command(uint8_t op, const uint8_t target[3], uint8_t arg0, uint8_t arg1,
+                          uint8_t arg2) {
+  if (!_ready) return false;
+  ChorusCommand c = {};
+  memcpy(c.magic, CHORUS_CMD_MAGIC, 4);
+  c.seq = s_cmdSeq++;
+  c.hop = 0;
+  c.op = op;
+  memcpy(c.target, target, 3);
+  c.arg0 = arg0;
+  c.arg1 = arg1;
+  c.arg2 = arg2;
+  bool ok = false;
+  for (int i = 0; i < CHORUS_CMD_REPEATS; i++) {
+    // Same sequence on every repeat: a badge dedupes on it, so the copies cost
+    // air but never cause the command to be applied more than once.
+    if (esp_now_send(kBroadcast, (const uint8_t *)&c, sizeof(c)) == ESP_OK) ok = true;
+  }
+  return ok;
 }

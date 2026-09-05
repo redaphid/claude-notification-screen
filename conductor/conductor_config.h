@@ -207,3 +207,11 @@
 
 // --- Diagnostics -----------------------------------------------------------
 #define SERIAL_REPORT_HZ 4
+
+// --- the roster ----------------------------------------------------------
+// How long a badge stays in the leader's list after its last beacon. Beacons
+// come every 2s, so this tolerates seven lost in a row before a badge that is
+// still in the field disappears from a phone's screen -- long enough to ride
+// out a crowd walking between two people, short enough that a badge someone
+// took home stops being offered.
+static constexpr uint32_t ROSTER_STALE_MS = 15000;
