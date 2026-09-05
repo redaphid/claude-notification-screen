@@ -40,7 +40,8 @@ Do not edit them casually.
   `docs/windows-flashing.md`.
 - **Flash a badge (Linux):** `pio run -t upload` (port in `platformio.ini`).
 - **Choose what the swarm shows:** on the leader's serial console type an
-  effect name (`plasma`, `tunnel`, `iris`, `mon`, `chroma`), `shader <n>`,
+  effect name (`plasma`, `tunnel`, `iris`, `mon`, `chroma`, `lattice`, `nfold`,
+  `satellites`), `shader <n>`,
   `next`, `prev`, `cycle <ms>`, or `?`. Every badge follows; each keeps its
   own crest in `mon` and `chroma`. Or use the offline-capable Web Serial
   page: https://redaphid.github.io/claude-notification-screen/leader.html
