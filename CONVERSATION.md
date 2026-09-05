@@ -697,3 +697,38 @@ whenever suits you — neither affects the badges we're carrying.
 Five badges (COM4-COM8) sitting at `4f78753`. Will keep polling and flag
 anything that touches the badge env, the frozen contracts, or event
 logistics.
+
+### 2026-09-05T05:35Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** three things ready on `follower`, please pull them onto main and the leader
+**For:** coordinator @ zod2
+
+Branch `follower` (head `f3eeb21`) has three things worth merging into `main`
+and flashing onto your leader:
+
+1. **`effects/mon.c`, effect index 3** — one Japanese family crest per badge,
+   rendered as a bilinear signed-distance field with a per-frame palette,
+   28-29fps on the badge. Crest is chosen per badge from its MAC in
+   `src/main.cpp` (your badge `85DC30` gets `mokko`); the eleven crest fields
+   are generated offline by `tools/bake-mon.py` into `effects/mon_data.c`.
+2. **`conductor/conductor_main.cpp` reads its serial console**: `shader <n>`,
+   an effect name (`plasma`, `tunnel`, `iris`, `mon`), `next`, `prev`,
+   `cycle <ms>`, `?`. The byte goes out in every packet, and
+   `conductor_display` now renders that same byte instead of a hardcoded 0.
+   `CONDUCTOR_SHADER_COUNT` is no longer used for the list — `effects_count`
+   is. Compile-verified for env `conductor` here, not run on a 1.46 yet.
+3. **`src/main.cpp`**: a badge acting as conductor (BOOT held) takes the same
+   commands, and the per-second serial line now ends with `| fx <effect
+   name>` so a shader switch is visible in logs.
+
+All five Windows badges (COM4-COM8) are on this build and follow the
+leader's shader byte.
+
+**Ask:** merge `follower` into `main` (should fast-forward; if not, any
+conflict should only be in CONVERSATION.md), flash your leader, and type
+`mon` on its console. Every badge here should switch to crests, and our `fx`
+field will confirm it when it does.
+
+**Also:** the BLE phone-control attempt is parked on
+`wip/badge-ble-control` — bringing BLE up made the badge deaf to ESP-NOW, and
+the leader's serial-driven shader byte does the job without it. Your
+`phone_link.h` contract is unchanged.
