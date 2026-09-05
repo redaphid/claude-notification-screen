@@ -162,6 +162,22 @@ static float presence = 0.0f;
 // the render path worked.
 static uint8_t activeShader = 0;
 
+// What a badge shows when nobody is conducting: at boot, and again once the
+// conductor has been silent for DEFAULT_REVERT_MS. Named, not indexed, so it
+// survives the registry growing. The bag ships on the ChromaDepth crest.
+#ifndef BADGE_DEFAULT_EFFECT_NAME
+#define BADGE_DEFAULT_EFFECT_NAME "chroma"
+#endif
+static constexpr uint32_t DEFAULT_REVERT_MS = 10000;
+static uint8_t defaultShader = 0;
+
+static uint8_t resolveDefaultShader() {
+  for (int i = 0; i < effects_count; i++) {
+    if (strcmp(effects_all[i]->name, BADGE_DEFAULT_EFFECT_NAME) == 0) return (uint8_t)i;
+  }
+  return 0;
+}
+
 static void effectsInit() {
   for (int i = 0; i < effects_count; i++) {
     if (effects_all[i]->init) effects_all[i]->init();
@@ -501,6 +517,10 @@ void setup() {
   canvas.fillSprite(0);  // effects only write inside the circle; clear the rest
   effectsInit();
   monSelectForThisBadge();
+  defaultShader = resolveDefaultShader();
+  activeShader = defaultShader;
+  conductorShader = defaultShader;
+  Serial.printf("[badge] default effect %u (%s)\n", (unsigned)defaultShader, effects_by_index(defaultShader)->name);
 #ifdef BADGE_LOCK_EFFECT
   // Bag builds: every badge wears its own crest no matter what the conductor's
   // shader byte says. The features still come from the conductor.
@@ -572,18 +592,26 @@ void loop() {
     mockDjFeatures(now, target);
   } else {
     uint32_t lastMs;
+    uint8_t packetShader;
     portENTER_CRITICAL(&featureMux);
     for (int i = 0; i < FEAT_COUNT; i++) target[i] = rxFeatures[i];
     lastMs = rxLastMs;
-#ifndef BADGE_LOCK_EFFECT
-    activeShader = rxShader;  // "everyone switch to 3"
-#endif
+    packetShader = rxShader;
     portEXIT_CRITICAL(&featureMux);
 
     // No conductor in earshot: decay toward stillness rather than freezing on
     // the last packet, so a badge that walks out of range exhales.
     heard = rxSeen && (now - lastMs) <= FEATURE_STALE_MS;
+<<<<<<< HEAD
     activeSource = heard ? SRC_ESPNOW : SRC_NONE;
+=======
+#ifndef BADGE_LOCK_EFFECT
+    // "Everyone switch to 3" while a conductor is talking; once it has been
+    // gone a while, settle back onto this badge's own default look.
+    if (heard) activeShader = packetShader;
+    else if (now - lastMs > DEFAULT_REVERT_MS) activeShader = defaultShader;
+#endif
+>>>>>>> 9691f07 (Badges boot on the ChromaDepth crest and follow the leader when it speaks)
   }
 
   // Drain queued relays here, in loop context, where esp_now_send() is safe.
