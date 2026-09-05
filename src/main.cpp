@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_coexist.h>
 #include <Preferences.h>
 #include <esp_system.h>
 #include <math.h>
@@ -16,6 +17,7 @@
 #include "chorus_packet.h"
 #include "display.h"
 #include "effects.h"
+#include "ble_control.h"
 
 static RoundBadgeDisplay display;
 static LGFX_Sprite canvas(&display);
@@ -142,6 +144,19 @@ static float presence = 0.0f;
 // the render path worked.
 static uint8_t activeShader = 0;
 
+// What a phone (or a build flag) has pinned on this badge. PHONE_CONTROL_FOLLOW
+// means "show whatever the conductor's shader byte says", which is the swarm
+// default; anything else holds that effect regardless of the packet. Stored in
+// NVS when the phone asks for it, so a badge given away keeps its look.
+#ifdef BADGE_LOCK_EFFECT
+static constexpr uint8_t DEFAULT_LOCK = (uint8_t)BADGE_LOCK_EFFECT;
+#else
+static constexpr uint8_t DEFAULT_LOCK = PHONE_CONTROL_FOLLOW;
+#endif
+static PhoneControlFrame control = {DEFAULT_LOCK, PHONE_CONTROL_DEFAULT, 255, 0};
+static int currentCrest = 0;
+static int monEffectIndex = -1;  // index of "mon" in effects_all, or -1
+
 static void effectsInit() {
   for (int i = 0; i < effects_count; i++) {
     if (effects_all[i]->init) effects_all[i]->init();
@@ -174,8 +189,57 @@ static void monSelectForThisBadge() {
     }
   }
   if (variant < 0) variant = (int)((tail * 2654435761u) >> 8) % mon_variant_count();
+  currentCrest = variant;
   mon_select(variant);
   Serial.printf("[badge] crest: %s (mon variant %d)\n", mon_variant_name(variant), variant);
+}
+
+// Apply a selection from a phone (or from NVS at boot). Runs in loop context;
+// it is the only place that touches the effect lock, the crest or the panel
+// brightness, so the BLE task never races the renderer.
+static void applyControl(const PhoneControlFrame &f, bool persist) {
+  control = f;
+  if (control.effect != PHONE_CONTROL_FOLLOW) {
+    if (control.effect >= effects_count) control.effect = (uint8_t)(control.effect % effects_count);
+    activeShader = control.effect;
+  }
+  if (control.crest != PHONE_CONTROL_DEFAULT) {
+    if (control.crest >= mon_variant_count()) control.crest = (uint8_t)(control.crest % mon_variant_count());
+    currentCrest = control.crest;
+    mon_select(currentCrest);
+  } else {
+    monSelectForThisBadge();
+  }
+  display.setBrightness(control.brightness);
+  if (persist) {
+    prefs.putUChar("fxLock", control.effect);
+    prefs.putUChar("crest", control.crest);
+    prefs.putUChar("bright", control.brightness);
+  }
+  Serial.printf("[badge] control: effect %s, crest %s, brightness %u%s\n",
+                control.effect == PHONE_CONTROL_FOLLOW ? "follow" : effects_by_index(control.effect)->name,
+                mon_variant_name(currentCrest), (unsigned)control.brightness, persist ? " (saved)" : "");
+  bleControlPublish(control);
+}
+
+// The catalog a phone reads so its menus come from this firmware, not a copy.
+static String buildCatalog(const char *name) {
+  String s = "name=";
+  s += name;
+  s += ";effects=";
+  for (int i = 0; i < effects_count; i++) {
+    if (i) s += ',';
+    s += effects_all[i]->name;
+    if (strcmp(effects_all[i]->name, "mon") == 0) monEffectIndex = i;
+  }
+  s += ";crests=";
+  for (int i = 0; i < mon_variant_count(); i++) {
+    if (i) s += ',';
+    s += mon_variant_name(i);
+  }
+  s += ";mon=";
+  s += monEffectIndex;
+  return s;
 }
 
 // --- ESP-NOW -------------------------------------------------------------
@@ -401,14 +465,30 @@ void setup() {
   selfTest();
   canvas.fillSprite(0);  // effects only write inside the circle; clear the rest
   effectsInit();
-  monSelectForThisBadge();
-#ifdef BADGE_LOCK_EFFECT
-  // Bag builds: every badge wears its own crest no matter what the conductor's
-  // shader byte says. The features still come from the conductor.
-  activeShader = (uint8_t)BADGE_LOCK_EFFECT;
-  Serial.printf("[badge] effect locked to %d (%s)\n", (int)activeShader,
-                effects_by_index(activeShader)->name);
-#endif
+
+  // What this badge shows: a phone's remembered choice from NVS if there is
+  // one, else the build default (bag builds pin the crest effect; the plain
+  // badge follows the conductor's shader byte).
+  PhoneControlFrame boot;
+  boot.effect = prefs.getUChar("fxLock", DEFAULT_LOCK);
+  boot.crest = prefs.getUChar("crest", PHONE_CONTROL_DEFAULT);
+  boot.brightness = prefs.getUChar("bright", 255);
+  boot.flags = 0;
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char bleName[16];
+  snprintf(bleName, sizeof(bleName), "%s%02X%02X", PHONE_LINK_NAME_PREFIX, mac[4], mac[5]);
+  const String catalog = buildCatalog(bleName);
+  applyControl(boot, false);
+  // BLE comes up after the WiFi radio (the big current spike) and after the
+  // panel, so a phone can only ever find a badge that is already rendering.
+  // Bringing up the BT controller next to a WiFi radio that is not associated
+  // with anything left ESP-NOW deaf on the bench (rx stayed at 0 while a badge
+  // without BLE kept counting). Tell the coexistence arbiter WiFi has priority
+  // and re-assert the channel once the controller is up.
+  esp_coex_preference_set(ESP_COEX_PREFER_WIFI);
+  bleControlInit(bleName, catalog.c_str(), control);
+  if (radioUp) esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
 
   Serial.printf("[badge] role: %s\n", isConductor ? "CONDUCTOR (mock DJ)" : "RECEIVER");
   Serial.printf("[badge] free heap %u, free psram %u\n",
@@ -417,6 +497,10 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+
+  // A phone picked something: apply it here, in render context.
+  PhoneControlFrame req;
+  if (bleControlPoll(&req)) applyControl(req, (req.flags & PHONE_CONTROL_FLAG_PERSIST) != 0);
 
   // --- conductor: analyse (for now, pretend to) and broadcast ---
   static uint32_t lastSendMs = 0;
@@ -443,9 +527,7 @@ void loop() {
     portENTER_CRITICAL(&featureMux);
     for (int i = 0; i < FEAT_COUNT; i++) target[i] = rxFeatures[i];
     lastMs = rxLastMs;
-#ifndef BADGE_LOCK_EFFECT
-    activeShader = rxShader;  // "everyone switch to 3"
-#endif
+    if (control.effect == PHONE_CONTROL_FOLLOW) activeShader = rxShader;  // "everyone switch to 3"
     portEXIT_CRITICAL(&featureMux);
 
     // No conductor in earshot: decay toward stillness rather than freezing on
@@ -493,7 +575,12 @@ void loop() {
   char hud[40];
   snprintf(hud, sizeof(hud), "%lu fps  rx:%lu", (unsigned long)fps, (unsigned long)rxCount);
   canvas.drawString(hud, SCREEN_W / 2, 180);
-  canvas.drawString(effects_by_index(activeShader)->name, SCREEN_W / 2, 200);
+  if ((int)activeShader == monEffectIndex) {
+    snprintf(hud, sizeof(hud), "mon %s", mon_variant_name(currentCrest));
+    canvas.drawString(hud, SCREEN_W / 2, 200);
+  } else {
+    canvas.drawString(effects_by_index(activeShader)->name, SCREEN_W / 2, 200);
+  }
 
   canvas.pushSprite(0, 0);
 
@@ -533,6 +620,17 @@ void loop() {
                     (unsigned long)hops[0], (unsigned long)hops[1], (unsigned long)hops[2],
                     (unsigned long)hops[3], (unsigned long)hops[4]);
     }
+    // What a connected phone sees about this badge (phone_link.h).
+    static uint32_t prevRx = 0, prevTx = 0;
+    PhoneStatusFrame st;
+    st.role = heard ? PHONE_ROLE_RECEIVER : PHONE_ROLE_IDLE;
+    st.espnowHeard = heard ? 1 : 0;
+    st.rxRate = (uint16_t)(rxCount - prevRx);
+    st.txRate = (uint16_t)(txOk - prevTx);
+    st.frames = 0;
+    prevRx = rxCount;
+    prevTx = txOk;
+    bleControlStatus(st);
     frames = 0;
     lastReportMs = now;
     if (bootAttempts && now > 3000) {

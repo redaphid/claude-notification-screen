@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chorus badge control</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0b10; color: #eee; font: 16px/1.4 system-ui, sans-serif; }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #9a9ab0; margin: 0 0 18px; font-size: 14px; }
+  button { font: inherit; border: 0; border-radius: 12px; padding: 14px 16px; cursor: pointer; background: #22223a; color: #eee; }
+  button:active { transform: scale(0.98); }
+  button.primary { background: #4c6ef5; color: #fff; width: 100%; font-size: 18px; }
+  button.on { background: #f5a04c; color: #100; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0 18px; }
+  .grid button { padding: 18px 10px; font-size: 17px; text-transform: capitalize; }
+  section { display: none; }
+  section.show { display: block; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #9a9ab0; margin: 18px 0 6px; }
+  .status { background: #15151f; border-radius: 12px; padding: 12px 14px; font-size: 14px; color: #c8c8dc; white-space: pre-line; }
+  label.row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+  input[type=range] { flex: 1; }
+  .err { color: #ff7b7b; margin-top: 12px; }
+  .hint { color: #7a7a90; font-size: 13px; margin-top: 22px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Chorus badge control</h1>
+  <p class="sub">Pick what one badge shows. The music still comes from whoever is conducting.</p>
+
+  <button class="primary" id="connect">Connect to a badge</button>
+  <div class="err" id="err"></div>
+
+  <section id="panel">
+    <h2>Effect</h2>
+    <div class="grid" id="effects"></div>
+
+    <h2 id="crestTitle">Crest</h2>
+    <div class="grid" id="crests"></div>
+
+    <h2>Backlight</h2>
+    <label class="row"><span>dim</span><input type="range" id="bright" min="8" max="255" value="255"><span>full</span></label>
+
+    <label class="row"><input type="checkbox" id="persist" checked> Remember this on the badge</label>
+
+    <h2>Badge</h2>
+    <div class="status" id="status">connecting…</div>
+  </section>
+
+  <p class="hint">Needs Web Bluetooth: Chrome or Edge on Android, Chrome on desktop, or the Bluefy browser on iPhone. The page must be served over https (or localhost).</p>
+</main>
+<script>
+// Keep in step with src/phone_link.h and src/phone_control.h.
+const SERVICE = 'c8a0f100-0451-4000-b000-63726e730001';
+const STATUS  = 'c8a0f102-0451-4000-b000-63726e730001';
+const CONTROL = 'c8a0f103-0451-4000-b000-63726e730001';
+const CATALOG = 'c8a0f104-0451-4000-b000-63726e730001';
+const FOLLOW = 255, DEFAULT_CREST = 255, FLAG_PERSIST = 1;
+const ROLE = ['idle (no conductor)', 'conducting from a phone', 'receiving a conductor'];
+
+let ctrl, catalog = {}, current = { effect: FOLLOW, crest: DEFAULT_CREST, brightness: 255, flags: 0 };
+const $ = id => document.getElementById(id);
+
+$('connect').onclick = async () => {
+  $('err').textContent = '';
+  try {
+    const dev = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'Chorus-' }], optionalServices: [SERVICE] });
+    dev.addEventListener('gattserverdisconnected', () => { $('status').textContent = 'disconnected'; $('connect').textContent = 'Reconnect'; });
+    const server = await dev.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE);
+    const cat = await svc.getCharacteristic(CATALOG);
+    parseCatalog(new TextDecoder().decode(await cat.readValue()));
+    ctrl = await svc.getCharacteristic(CONTROL);
+    applyFrame(await ctrl.readValue());
+    ctrl.addEventListener('characteristicvaluechanged', e => applyFrame(e.target.value));
+    await ctrl.startNotifications();
+    const st = await svc.getCharacteristic(STATUS);
+    st.addEventListener('characteristicvaluechanged', e => showStatus(e.target.value));
+    await st.startNotifications();
+    $('connect').textContent = 'Connected to ' + dev.name;
+    $('panel').classList.add('show');
+    render();
+  } catch (e) { $('err').textContent = e.message || String(e); }
+};
+
+function parseCatalog(text) {
+  catalog = {};
+  for (const part of text.split(';')) {
+    const [k, v] = part.split('=');
+    if (k) catalog[k] = v ?? '';
+  }
+  catalog.effects = (catalog.effects || '').split(',').filter(Boolean);
+  catalog.crests = (catalog.crests || '').split(',').filter(Boolean);
+  catalog.mon = catalog.mon !== undefined ? parseInt(catalog.mon, 10) : -1;
+}
+
+function applyFrame(dv) {
+  if (dv.byteLength < 4) return;
+  current = { effect: dv.getUint8(0), crest: dv.getUint8(1), brightness: dv.getUint8(2), flags: dv.getUint8(3) };
+  $('bright').value = current.brightness;
+  render();
+}
+
+function render() {
+  const fx = $('effects'); fx.innerHTML = '';
+  const follow = mkButton('follow conductor', current.effect === FOLLOW, () => send({ effect: FOLLOW }));
+  fx.appendChild(follow);
+  catalog.effects.forEach((name, i) => fx.appendChild(mkButton(name, current.effect === i, () => send({ effect: i }))));
+  const showCrests = catalog.mon >= 0 && (current.effect === catalog.mon || current.effect === FOLLOW);
+  $('crestTitle').style.display = showCrests ? '' : 'none';
+  const cr = $('crests'); cr.innerHTML = ''; cr.style.display = showCrests ? '' : 'none';
+  if (showCrests) {
+    cr.appendChild(mkButton('this badge\'s own', current.crest === DEFAULT_CREST, () => send({ crest: DEFAULT_CREST })));
+    catalog.crests.forEach((name, i) => cr.appendChild(mkButton(name, current.crest === i, () => send({ effect: catalog.mon, crest: i }))));
+  }
+}
+
+function mkButton(label, on, fn) {
+  const b = document.createElement('button');
+  b.textContent = label; if (on) b.classList.add('on'); b.onclick = fn; return b;
+}
+
+$('bright').oninput = () => send({ brightness: parseInt($('bright').value, 10) });
+
+let sending = Promise.resolve();
+function send(patch) {
+  const f = { ...current, ...patch, flags: $('persist').checked ? FLAG_PERSIST : 0 };
+  const bytes = new Uint8Array([f.effect, f.crest, f.brightness, f.flags]);
+  sending = sending.then(() => ctrl.writeValueWithoutResponse(bytes)).catch(e => { $('err').textContent = e.message; });
+}
+
+function showStatus(dv) {
+  if (dv.byteLength < 8) return;
+  const role = dv.getUint8(0), heard = dv.getUint8(1);
+  const rx = dv.getUint16(2, true), tx = dv.getUint16(4, true), frames = dv.getUint16(6, true);
+  $('status').textContent = `${catalog.name || ''}\n${ROLE[role] || role}${heard ? ' · conductor heard' : ''}\n${rx} packets/s in · ${tx} packets/s out · ${frames} phone frames`;
+}
+</script>
+</body>
+</html>
