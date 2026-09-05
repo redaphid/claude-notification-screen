@@ -35,7 +35,14 @@
 // for "this is not the 1.46" rather than "the display is broken".
 bool conductorDisplayInit();
 
-// Draws one frame: the effect the swarm is rendering, plus what this board is
-// hearing. Safe to call at whatever rate the analysis loop runs.
+// Publishes what this board is currently hearing. Returns immediately: the
+// actual drawing happens on the other core, so the audio path never waits on
+// the panel. Safe to call at whatever rate the analysis loop runs.
+// How long the last frame actually took to transform and push. The panel is
+// 412x412 over QSPI and the effects render at 240x240, so the scale-up is not
+// free -- and this loop also has to feed a microphone.
+uint32_t conductorDisplayLastDrawUs();
+uint32_t conductorDisplayFps();
+
 void conductorDisplayDraw(const float features[4], uint8_t beat, float beatEnv,
                           uint32_t txCount, uint32_t analysisFps);

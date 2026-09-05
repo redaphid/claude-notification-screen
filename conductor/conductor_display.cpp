@@ -72,6 +72,25 @@ public:
 LeaderDisplay display;
 LGFX_Sprite canvas(&display);
 bool displayReady = false;
+uint32_t lastDrawUs = 0;
+
+// A frame costs ~30ms to transform and push -- measured, not estimated -- while
+// the microphone needs servicing every 16ms. Drawing on the audio thread halved
+// the analysis rate from 62 to 30 hops/sec, which means dropped audio.
+//
+// So the panel gets its own task on the other core. The audio path publishes a
+// snapshot and never waits for pixels: the swarm matters more than the monitor.
+struct FrameSnapshot {
+  float features[4];
+  uint8_t beat;
+  float beatEnv;
+  uint32_t txCount;
+  uint32_t analysisFps;
+};
+portMUX_TYPE snapshotMux = portMUX_INITIALIZER_UNLOCKED;
+volatile FrameSnapshot pending = {};
+volatile bool beatPending = false;
+uint32_t drawFps = 0;
 
 bool expanderWrite(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(EXPANDER_I2C_ADDR);
@@ -101,6 +120,8 @@ bool releasePanelFromReset() {
   delay(50);
   return true;
 }
+
+void displayTask(void *);  // defined below, runs on the other core
 
 }  // namespace
 
@@ -139,14 +160,22 @@ bool conductorDisplayInit() {
   }
 
   displayReady = true;
-  Serial.printf("[leader] display up: %dx%d SPD2010 QSPI, %d effects\n", LCD_W, LCD_H,
-                effects_count);
+
+  // Core 0: the Arduino loop (audio, analysis, radio) owns core 1.
+  xTaskCreatePinnedToCore(displayTask, "leader-display", 6144, nullptr, 1, nullptr, 0);
+
+  Serial.printf("[leader] display up: %dx%d SPD2010 QSPI, %d effects, drawing on core 0\n",
+                LCD_W, LCD_H, effects_count);
   return true;
 }
 
-void conductorDisplayDraw(const float features[4], uint8_t beat, float beatEnv,
-                          uint32_t txCount, uint32_t analysisFps) {
-  if (!displayReady) return;
+namespace {
+
+void renderFrame(const FrameSnapshot &snap) {
+  const float *features = snap.features;
+  const uint8_t beat = snap.beat;
+  const uint32_t txCount = snap.txCount;
+  const uint32_t analysisFps = snap.analysisFps;
 
   EffectInput in;
   in.bass = features[0];
@@ -155,7 +184,7 @@ void conductorDisplayDraw(const float features[4], uint8_t beat, float beatEnv,
   in.energy = features[3];
   in.time_ms = millis();
   in.beat = beat;
-  in.beat_env = beatEnv;
+  in.beat_env = snap.beatEnv;
 
   effects_by_index(0)->render((uint16_t *)canvas.getBuffer(), &in);
 
@@ -166,7 +195,8 @@ void conductorDisplayDraw(const float features[4], uint8_t beat, float beatEnv,
   canvas.setTextSize(1);
   canvas.setTextColor(canvas.color888(255, 255, 255));
   char line[32];
-  snprintf(line, sizeof(line), "LEADER %lufps", (unsigned long)analysisFps);
+  snprintf(line, sizeof(line), "LEADER a%lu d%lu", (unsigned long)analysisFps,
+           (unsigned long)drawFps);
   canvas.drawString(line, 6, 6);
   snprintf(line, sizeof(line), "tx %lu", (unsigned long)txCount);
   canvas.drawString(line, 6, 18);
@@ -183,6 +213,51 @@ void conductorDisplayDraw(const float features[4], uint8_t beat, float beatEnv,
   }
 
   // 240 -> 412 is 1.716x; pushRotateZoom centres it on the round panel.
+  const uint32_t t0 = micros();
   canvas.pushRotateZoom(&display, LCD_W / 2, LCD_H / 2, 0.0f, LCD_W / (float)EFFECT_W,
                         LCD_H / (float)EFFECT_H);
+  lastDrawUs = micros() - t0;
 }
+
+void displayTask(void *) {
+  uint32_t frames = 0, lastFpsMs = millis();
+  for (;;) {
+    FrameSnapshot snap;
+    portENTER_CRITICAL(&snapshotMux);
+    snap = *(const FrameSnapshot *)&pending;
+    // An onset lasts one analysis hop but the screen may not draw for another
+    // 30ms, so a beat is latched until a frame has actually shown it.
+    snap.beat = beatPending ? 1 : 0;
+    beatPending = false;
+    portEXIT_CRITICAL(&snapshotMux);
+
+    renderFrame(snap);
+
+    frames++;
+    const uint32_t now = millis();
+    if (now - lastFpsMs >= 1000) {
+      drawFps = frames * 1000 / (now - lastFpsMs);
+      frames = 0;
+      lastFpsMs = now;
+    }
+    // Yield regardless: this task must never starve anything else on its core.
+    vTaskDelay(1);
+  }
+}
+
+}  // namespace
+
+void conductorDisplayDraw(const float features[4], uint8_t beat, float beatEnv,
+                          uint32_t txCount, uint32_t analysisFps) {
+  if (!displayReady) return;
+  portENTER_CRITICAL(&snapshotMux);
+  for (int i = 0; i < 4; i++) pending.features[i] = features[i];
+  pending.beatEnv = beatEnv;
+  pending.txCount = txCount;
+  pending.analysisFps = analysisFps;
+  if (beat) beatPending = true;
+  portEXIT_CRITICAL(&snapshotMux);
+}
+
+uint32_t conductorDisplayLastDrawUs() { return lastDrawUs; }
+uint32_t conductorDisplayFps() { return drawFps; }
