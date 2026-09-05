@@ -40,8 +40,14 @@ Do not edit them casually.
   `docs/windows-flashing.md`.
 - **Flash a badge (Linux):** `pio run -t upload` (port in `platformio.ini`).
 - **Choose what the swarm shows:** on the leader's serial console type an
-  effect name, `shader <n>`, `next`, `prev`, `cycle <ms>`, or `?`. Every
-  badge follows; each keeps its own crest in the `mon` effect.
+  effect name (`plasma`, `tunnel`, `iris`, `mon`, `chroma`), `shader <n>`,
+  `next`, `prev`, `cycle <ms>`, or `?`. Every badge follows; each keeps its
+  own crest in `mon` and `chroma`. Or use the offline-capable Web Serial
+  page: https://redaphid.github.io/claude-notification-screen/leader.html
+  (source `web/leader.html`; publish with
+  `git subtree split --prefix=web -b gh-pages && git push -f origin gh-pages`).
+- **Pin badges to one effect** regardless of the leader: envs `badge_mon`
+  (3) and `badge_chroma` (4), e.g. `.\tools\flash-all.ps1 -Env badge_chroma`.
 - **Watch badges:** `.\tools\watch-badges.ps1 -Seconds 60` summarises fps,
   rx rate, relays and stalls across every attached badge.
 
