@@ -187,6 +187,15 @@
 // than this -- otherwise a snare roll becomes a packet storm.
 #define PACKET_MIN_INTERVAL_MS 8
 
+// What the swarm shows when the leader powers on. Looked up BY NAME, not by
+// index, so it keeps meaning the same effect even as the registry grows -- an
+// index would silently point at something else the next time an effect is
+// appended. If the name is not found the leader falls back to index 0 and says
+// so, rather than booting into whatever happened to land at that slot.
+#ifndef CONDUCTOR_BOOT_SHADER_NAME
+#define CONDUCTOR_BOOT_SHADER_NAME "chroma"
+#endif
+
 // Shader broadcast. 0 disables auto-cycling; the conductor simply asserts
 // shader 0 and the badges stay in lockstep on it.
 #ifndef CONDUCTOR_SHADER_CYCLE_MS

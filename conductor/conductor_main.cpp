@@ -40,6 +40,8 @@
 
 #include <Arduino.h>
 
+#include <string.h>
+
 #include "conductor_config.h"
 #include "conductor_display.h"
 // Relative on purpose: -I${PROJECT_DIR}/effects in platformio.ini comes out
@@ -175,6 +177,20 @@ void setup() {
 
   // The leader has a screen too. It shows what this board is hearing, so a
   // silent mic or a mute radio is visible from across a room without a laptop.
+  // Boot on the effect the event wants, resolved by name.
+  {
+    int boot = -1;
+    for (int i = 0; i < effects_count; i++) {
+      if (strcmp(effects_all[i]->name, CONDUCTOR_BOOT_SHADER_NAME) == 0) { boot = i; break; }
+    }
+    if (boot < 0) {
+      Serial.printf("[conductor] boot shader \"%s\" not found -- falling back to %s\n",
+                    CONDUCTOR_BOOT_SHADER_NAME, effects_all[0]->name);
+      boot = 0;
+    }
+    setShader(boot);
+  }
+
   displayOk = conductorDisplayInit();
   if (!displayOk) {
     Serial.println("[conductor] no display -- continuing headless, audio still runs");
