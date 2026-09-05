@@ -158,6 +158,32 @@ A pin from the button or the phone outranks `BADGE_LOCK_EFFECT`, so the bag
 builds (`badge_mon`, `badge_chroma`) choose a badge's *default* rather than
 forbidding a wearer from changing their mind.
 
+## Nothing is written on the visuals
+
+Badges and the leader draw the effect and nothing else. Every number the old
+HUD carried lives somewhere better now: the roster on the phone knows what each
+badge is showing, whether it is pinned and whether it is hearing the leader; the
+serial line carries fps, packet counts and the neighbour table; and `find`
+pulses a ring when you need to pick one badge out of thirty.
+
+The leader's white beat ring went with it, for a second reason -- `mon.c` is
+explicit that ChromaDepth wants no white anywhere, because white is every
+wavelength at once and the glasses smear it.
+
+For bench work, where a photograph of the screen being a readable status report
+matters more than the visual does:
+
+```
+PLATFORMIO_BUILD_FLAGS=-DBADGE_HUD=1  pio run -t upload
+PLATFORMIO_BUILD_FLAGS=-DLEADER_HUD=1 pio run -e conductor -t upload
+```
+
+The one thing still written on the panel is the boot self-test -- the RED /
+GREEN / BLUE / SPRITE RED cards, about four seconds at power-on. That is not a
+visual, it is the only way to tell a dead backlight from a dead panel from a
+wrong colour order without instruments, and it is gone before the first effect
+draws. Say the word and it goes too.
+
 ## What is not verified
 
 Everything above was measured at desk range, one badge, one leader. BLE range

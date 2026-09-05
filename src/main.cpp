@@ -226,6 +226,19 @@ static uint8_t activeShader = 0;
 #ifndef BADGE_DEFAULT_EFFECT_NAME
 #define BADGE_DEFAULT_EFFECT_NAME "chroma"
 #endif
+// Nothing is written on top of a visual. A badge is worn, not read: the effect
+// fills a 240px disc and a line of white 8px text across it is the one thing
+// that makes it look like a dev board instead of a thing somebody made. Every
+// number the HUD used to carry is available somewhere better -- the roster on
+// the phone knows what each badge is showing and whether it is hearing the
+// leader, the serial line carries fps and packet counts, and CMD_IDENTIFY
+// pulses a ring when you need to pick one badge out of thirty.
+//
+// Build with -DBADGE_HUD=1 to put it back for bench work.
+#ifndef BADGE_HUD
+#define BADGE_HUD 0
+#endif
+
 static constexpr uint32_t DEFAULT_REVERT_MS = 10000;
 static uint8_t defaultShader = 0;
 // Only complain once per unfamiliar index, or a version-skewed swarm fills the
@@ -753,6 +766,8 @@ void setup() {
 // even though the conductor is still shouting a different shader thirty times a
 // second; anything else makes the button look broken.
 static constexpr uint32_t BUTTON_HOLD_MS = 1200;
+
+#if BADGE_HUD
 static const char *toastText = nullptr;
 static uint32_t toastUntilMs = 0;
 
@@ -760,6 +775,11 @@ static void toast(const char *text, uint32_t ms = 1500) {
   toastText = text;
   toastUntilMs = millis() + ms;
 }
+#else
+// The visual itself is the feedback: a tap changes what the badge is showing,
+// which is more legible than a word written over it would have been.
+static inline void toast(const char *, uint32_t = 1500) {}
+#endif
 
 static void pollButton(uint32_t now) {
   static bool wasDown = false;
@@ -991,9 +1011,11 @@ void loop() {
   const Effect *effect = effects_by_index(activeShader);
   effect->render((uint16_t *)canvas.getBuffer(), &in);
 
-  // Bring-up HUD. Cheap, and it makes a photograph of the screen into a
-  // readable status report.
+  // fps lives outside the HUD guard: the roster beacon reports it, and the
+  // serial line prints it, whether or not anything is drawn on the screen.
   static uint32_t fps = 0;
+
+#if BADGE_HUD
   canvas.setTextDatum(middle_center);
   canvas.setTextSize(1);
   canvas.setTextColor(canvas.color888(255, 255, 255));
@@ -1011,6 +1033,7 @@ void loop() {
     canvas.drawString("phone standby", SCREEN_W / 2, 212);
   }
   if (pinned) canvas.drawString("pinned", SCREEN_W / 2, 224);
+#endif
 
   // Identify: pulse a white ring so one badge stands out in a crowd of thirty
   // in the dark. A ring rather than a filled screen -- the effect stays legible
@@ -1023,12 +1046,13 @@ void loop() {
     canvas.drawCircle(SCREEN_W / 2, SCREEN_H / 2, r - 1, canvas.color888(v, v, v));
   }
 
-  // A tap on the back button has to say something, or it looks broken.
+#if BADGE_HUD
   if (toastText && now < toastUntilMs) {
     canvas.setTextSize(2);
     canvas.drawString(toastText, SCREEN_W / 2, SCREEN_H / 2);
     canvas.setTextSize(1);
   }
+#endif
 
   canvas.pushSprite(0, 0);
 

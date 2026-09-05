@@ -22,6 +22,15 @@ in the repo.
 - `docs/` guides and bench logs. Start with `docs/effects.md`.
 - `CONVERSATION.md` written conversation between the two benches' agents.
 
+## Nothing is drawn on top of a visual
+
+No HUD, no effect name, no fps, no beat ring. The roster on the phone, the
+serial line and `find` carry all of it, and a line of 8px white text across a
+240px disc is what made a badge look like a dev board. Bench builds restore it:
+`PLATFORMIO_BUILD_FLAGS=-DBADGE_HUD=1` (or `-DLEADER_HUD=1`). The boot self-test
+cards are deliberately still there -- they are the only instrument-free way to
+tell a dead backlight from a dead panel.
+
 ## The button on the back
 
 Held at reset it makes a badge the conductor. While the badge is running: tap

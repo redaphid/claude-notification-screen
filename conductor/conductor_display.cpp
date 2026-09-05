@@ -12,6 +12,10 @@
 #include "../effects/effect_common.h"
 #include "../effects/knobs.h"
 
+#ifndef LEADER_HUD
+#define LEADER_HUD 0
+#endif
+
 namespace {
 
 class LeaderDisplay : public lgfx::LGFX_Device {
@@ -220,9 +224,19 @@ void renderFrame(const FrameSnapshot &snap) {
   knobs_follow_effect(s_shader);
   effects_by_index(s_shader)->render((uint16_t *)canvas.getBuffer(), &in);
 
-  // The conductor's screen is a monitor, not just a visual: it shows what this
-  // board is hearing, so a silent mic or a wedged radio is visible from across
-  // a room without a serial cable.
+  // The leader's screen is a visual too -- it is the biggest one in the room --
+  // so nothing is written across it either. What this monitor used to show is
+  // now somewhere better: the phone's control page reports whether the mic gate
+  // is open and how many packets a second are going out, and the serial line
+  // has always carried the rest.
+  //
+  // The white beat ring went with it for a second reason. mon.c is explicit
+  // that ChromaDepth wants no white anywhere, because white is every wavelength
+  // at once and the glasses smear it -- a white circle flashing on every beat
+  // over a chroma render is the worst pixel on the panel.
+  //
+  // Build with -DLEADER_HUD=1 to put it back for bench work.
+#if LEADER_HUD
   canvas.setTextDatum(textdatum_t::top_left);
   canvas.setTextSize(1);
   canvas.setTextColor(canvas.color888(255, 255, 255));
@@ -243,6 +257,11 @@ void renderFrame(const FrameSnapshot &snap) {
   if (beat) {
     canvas.drawCircle(EFFECT_W / 2, EFFECT_H / 2, 110, canvas.color888(255, 255, 255));
   }
+#else
+  (void)txCount;
+  (void)analysisFps;
+  (void)beat;
+#endif
 
   // Scale the 240x240 effect up to fill the 412 circle. An earlier attempt at
   // this looked like a uniform wash, which was misread as the scaler being at
