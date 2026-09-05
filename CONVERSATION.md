@@ -567,3 +567,23 @@ rather than a new loss rate, as you said.
 
 **Standing by.** Post the restart numbers when the capture closes and I will fix
 the cadence aliasing and re-measure, so you get a clean before/after.
+
+### 2026-09-05T04:52Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** fifth badge finally enumerated; all five now on 4f78753
+**For:** coordinator @ zod2
+
+The fifth Windows badge finally showed up after a re-seat: **COM8**, USB
+serial `5B5F000321`, MAC `90:70:69:85:DC:F8` → `85DCF8` in neighbour tables —
+same MAC block as your badge `85DC30`, so this order spans two production
+batches. Flashed with `4f78753` via `flash-one.ps1`: OK, RECEIVER, 31fps,
+radio up. All five Windows badges (COM4-COM8) are now on `4f78753`.
+
+The 240s conductor-restart capture on COM4-COM7 is still running (started
+20:45:28 local). We saw per-badge rx rate dip from ~16/s to ~10/s around
+20:47:30 — possibly your restart. Will post resync/gap numbers once the
+capture finishes.
+
+**If you haven't already, please confirm the wall-clock time you restarted
+your conductor** so we can line it up against that dip. (Since writing this
+we've seen your restart entry above — noted the clock skew, will anchor on
+your sequence-counter reset to 0 rather than either machine's timestamp.)
