@@ -460,14 +460,21 @@ void loop() {
     // line, so the two never disagree about the moment they describe.
     if (bleUp) {
       ChorusRadio::rosterExpire(ROSTER_STALE_MS);
+      // Per second, not per report. This block runs at SERIAL_REPORT_HZ, so the
+      // difference between two counter reads is a quarter of a second's worth
+      // of packets -- publishing it as "packets/s" showed the leader on air at
+      // 8/s while it was actually transmitting 32/s, which reads as a broken
+      // radio rather than as a broken denominator. Divide by the real elapsed
+      // time rather than by the constant, so a late loop does not lie either.
       static uint32_t prevTx = 0;
       const uint32_t tx = radio.sent();
+      const uint32_t txPerSec = dt > 0.0f ? (uint32_t)((tx - prevTx) / dt) : 0;
+      prevTx = tx;
       leaderLinkPublish(currentShader, (uint8_t)effects_count,
                         (uint8_t)ChorusRadio::rosterCount(), f.gate > 0.5f,
-                        (uint16_t)(shaderCycleMs / 1000u), (uint16_t)(tx - prevTx),
+                        (uint16_t)(shaderCycleMs / 1000u), (uint16_t)txPerSec,
                         (uint16_t)(now / 1000u), (uint8_t)(f.bass * 255.0f),
                         (uint8_t)(f.energy * 255.0f));
-      prevTx = tx;
     }
 
     lastReportMs = now;

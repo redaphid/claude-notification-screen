@@ -1,0 +1,322 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chorus Control</title>
+<link rel="manifest" href="control.webmanifest">
+<meta name="theme-color" content="#07070b">
+<style>
+  :root {
+    --bg: #07070b; --panel: #12121a; --line: #23232f; --ink: #e8e8f0;
+    --dim: #8a8a9a; --hot: #ff3b6b; --ok: #35d07f; --warn: #ffb020;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, sans-serif;
+    padding: env(safe-area-inset-top) 14px calc(env(safe-area-inset-bottom) + 24px);
+    max-width: 620px; margin-inline: auto;
+  }
+  h1 { font-size: 17px; margin: 18px 0 2px; letter-spacing: .04em; text-transform: uppercase; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 16px; }
+  button {
+    font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 14px; cursor: pointer;
+  }
+  button:active { transform: scale(.985); }
+  button[disabled] { opacity: .4; }
+  .big { width: 100%; padding: 16px; font-size: 16px; font-weight: 600; }
+  .connect { background: var(--hot); border-color: var(--hot); color: #fff; }
+  /* Touch targets stay >=44px even on a small phone in the dark. */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+  .fx.on { background: var(--hot); border-color: var(--hot); color: #fff; }
+  section { margin-top: 22px; }
+  h2 { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim);
+       margin: 0 0 8px; font-weight: 600; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .row + .row { margin-top: 10px; }
+  .badge { width: 100%; text-align: left; display: flex; align-items: center; gap: 10px; }
+  .badge .id { font-family: ui-monospace, monospace; font-size: 15px; letter-spacing: .05em; }
+  .badge .what { color: var(--dim); font-size: 13px; margin-left: auto; text-align: right; }
+  .pill { font-size: 11px; padding: 2px 7px; border-radius: 99px; border: 1px solid var(--line);
+          color: var(--dim); }
+  .pill.pin { color: var(--hot); border-color: var(--hot); }
+  .pill.gone { color: var(--warn); border-color: var(--warn); }
+  .meter { height: 4px; background: var(--line); border-radius: 99px; overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--ok); width: 0; transition: width .12s; }
+  dialog {
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    border-radius: 16px; padding: 16px; width: min(94vw, 420px);
+  }
+  dialog::backdrop { background: #000a; }
+  .err { color: var(--hot); font-size: 13px; margin-top: 10px; min-height: 1.4em; }
+  .muted { color: var(--dim); font-size: 13px; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; color: var(--dim); font-size: 12.5px;
+           font-variant-numeric: tabular-nums; }
+  a { color: var(--ok); }
+</style>
+
+<h1>Chorus Control</h1>
+<div class="sub" id="sub">The leader, from your pocket.</div>
+
+<button class="big connect" id="connect">Connect to the leader</button>
+<div class="err" id="err"></div>
+
+<div id="live" hidden>
+  <section>
+    <h2>Everyone</h2>
+    <div class="grid" id="fx"></div>
+    <div class="row" style="margin-top:8px">
+      <button id="prev" style="flex:1">‹ prev</button>
+      <button id="next" style="flex:1">next ›</button>
+      <button id="cycle" style="flex:2">Auto-cycle: off</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Leader</h2>
+    <div class="card">
+      <div class="stats" id="stats"></div>
+      <div class="meter" style="margin-top:10px"><i id="level"></i></div>
+    </div>
+  </section>
+
+  <section>
+    <h2 id="swarmHead">Badges</h2>
+    <div id="roster"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="rollcall" style="flex:1">Roll call</button>
+      <button id="freeAll" style="flex:1">Release all</button>
+    </div>
+  </section>
+</div>
+
+<dialog id="sheet">
+  <div class="row"><strong id="sheetId" style="font-family:ui-monospace,monospace"></strong>
+    <span class="muted" id="sheetWhat" style="margin-left:auto"></span></div>
+  <section style="margin-top:14px">
+    <h2>Show this badge</h2>
+    <div class="grid" id="sheetFx"></div>
+  </section>
+  <div class="row" style="margin-top:14px">
+    <button id="sheetFind" style="flex:1">Find it</button>
+    <button id="sheetFree" style="flex:1">Follow leader</button>
+  </div>
+  <div class="row"><button id="sheetClose" style="flex:1">Close</button></div>
+</dialog>
+
+<script>
+// --- the contract, kept in step with conductor/leader_link.h -----------------
+const SVC   = 'c8a0f200-0451-4000-b000-63726e730001';
+const C_CTL = 'c8a0f201-0451-4000-b000-63726e730001';
+const C_ST  = 'c8a0f202-0451-4000-b000-63726e730001';
+const C_ROS = 'c8a0f203-0451-4000-b000-63726e730001';
+const C_NAM = 'c8a0f204-0451-4000-b000-63726e730001';
+
+const OP = {
+  SET_EFFECT: 1, NEXT: 2, PREV: 3, CYCLE_SECONDS: 4,
+  BADGE_EFFECT: 16, BADGE_RELEASE: 17, BADGE_IDENTIFY: 18, BADGE_BRIGHTNESS: 19, ROLL_CALL: 20,
+};
+const F_PINNED = 1, F_HEARING = 2, F_CONDUCTING = 4, F_IDENTIFYING = 8;
+
+const $ = id => document.getElementById(id);
+const err = m => $('err').textContent = m || '';
+
+let dev = null, ctl = null, ros = null;
+// Effect names come from the leader, never from this page: the registry is
+// append-only, so a page cached on a phone months ago must still be able to
+// name an effect added since.
+let names = [];
+let state = { shader: 0, badges: 0, cycleS: 0 };
+let roster = [];
+let sheetFor = null;
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('control-sw.js').catch(() => {});
+
+// --- connection -------------------------------------------------------------
+async function connect() {
+  if (!navigator.bluetooth) {
+    err('This browser has no Web Bluetooth. Use Chrome on Android, or Chrome/Edge on desktop.');
+    return;
+  }
+  try {
+    err('');
+    $('connect').disabled = true;
+    dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] });
+    dev.addEventListener('gattserverdisconnected', onDrop);
+    const gatt = await dev.gatt.connect();
+    const svc = await gatt.getPrimaryService(SVC);
+    ctl = await svc.getCharacteristic(C_CTL);
+    ros = await svc.getCharacteristic(C_ROS);
+
+    const nameBuf = await (await svc.getCharacteristic(C_NAM)).readValue();
+    names = new TextDecoder().decode(nameBuf).split('\n').filter(Boolean);
+
+    const st = await svc.getCharacteristic(C_ST);
+    st.addEventListener('characteristicvaluechanged', e => onState(e.target.value));
+    await st.startNotifications();
+    onState(await st.readValue());
+
+    drawEffects();
+    await refreshRoster();
+    // The roster only changes when a badge appears, leaves, or is pinned, and a
+    // read is cheap; poll rather than notify so a phone that misses one packet
+    // is never left showing a swarm that no longer exists.
+    setInterval(refreshRoster, 3000);
+
+    $('live').hidden = false;
+    $('connect').textContent = 'Disconnect';
+    $('sub').textContent = dev.name || 'Chorus Leader';
+  } catch (e) {
+    if (e && e.name === 'NotFoundError') err('No leader chosen.');
+    else err(String(e && e.message || e));
+  } finally {
+    $('connect').disabled = false;
+  }
+}
+
+function onDrop() {
+  $('live').hidden = true;
+  $('connect').textContent = 'Connect to the leader';
+  $('sub').textContent = 'Disconnected.';
+  err('The leader went away. Out of range, or its battery.');
+}
+
+$('connect').onclick = () => {
+  if (dev && dev.gatt.connected) { dev.gatt.disconnect(); return; }
+  connect();
+};
+
+// --- sending ----------------------------------------------------------------
+// Every write is one 8-byte LeaderControlFrame. Write-with-response, so a
+// button that did not land reports it rather than lying.
+async function send(op, target = [0, 0, 0], a0 = 0, a1 = 0, a2 = 0) {
+  if (!ctl) return;
+  const f = new Uint8Array([op, target[0], target[1], target[2], a0, a1, a2, 0]);
+  try {
+    await ctl.writeValue(f);
+    err('');
+  } catch (e) {
+    err('That did not reach the leader: ' + (e && e.message || e));
+  }
+}
+
+const idBytes = hex => [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16));
+const idHex = e => [...e.id].map(b => b.toString(16).padStart(2, '0')).join('');
+
+// --- leader state -----------------------------------------------------------
+function onState(v) {
+  state = {
+    shader: v.getUint8(0), effectCount: v.getUint8(1), badges: v.getUint8(2),
+    hearing: v.getUint8(3), cycleS: v.getUint16(4, true), txPerSec: v.getUint16(6, true),
+    uptimeS: v.getUint16(8, true), bass: v.getUint8(10), energy: v.getUint8(11),
+  };
+  for (const b of document.querySelectorAll('#fx .fx')) {
+    b.classList.toggle('on', Number(b.dataset.i) === state.shader);
+  }
+  $('cycle').textContent = state.cycleS ? `Auto-cycle: ${state.cycleS}s` : 'Auto-cycle: off';
+  $('level').style.width = Math.round(state.energy / 2.55) + '%';
+  $('stats').innerHTML = [
+    `<span>${state.txPerSec}/s on air</span>`,
+    `<span>${state.hearing ? 'hearing music' : 'quiet'}</span>`,
+    `<span>${fmtUptime(state.uptimeS)}</span>`,
+  ].join('');
+}
+
+// uint16 seconds wraps at 18h12m. Say so rather than showing a leader that has
+// been running all night claim it just booted.
+const fmtUptime = s => (s >= 65000 ? '18h+' : s < 90 ? `${s}s up` : `${Math.round(s / 60)}m up`);
+
+// --- effects ----------------------------------------------------------------
+function effectButtons(container, onPick) {
+  container.innerHTML = '';
+  names.forEach((n, i) => {
+    const b = document.createElement('button');
+    b.className = 'fx';
+    b.dataset.i = i;
+    b.textContent = n;
+    b.onclick = () => onPick(i);
+    container.append(b);
+  });
+}
+
+function drawEffects() {
+  effectButtons($('fx'), i => send(OP.SET_EFFECT, [0, 0, 0], i));
+}
+
+$('next').onclick = () => send(OP.NEXT);
+$('prev').onclick = () => send(OP.PREV);
+$('cycle').onclick = () => {
+  // Off -> 30s -> 60s -> off. Three states is all anyone wants mid-set.
+  const nextS = state.cycleS === 0 ? 30 : state.cycleS === 30 ? 60 : 0;
+  send(OP.CYCLE_SECONDS, [0, 0, 0], nextS & 255, nextS >> 8);
+};
+$('rollcall').onclick = async () => { await send(OP.ROLL_CALL); setTimeout(refreshRoster, 1400); };
+$('freeAll').onclick = () => send(OP.BADGE_RELEASE);
+
+// --- roster -----------------------------------------------------------------
+async function refreshRoster() {
+  if (!ros || !dev || !dev.gatt.connected) return;
+  let v;
+  try { v = await ros.readValue(); } catch { return; }
+  const n = v.getUint8(0);
+  roster = [];
+  for (let i = 0; i < n; i++) {
+    const o = 1 + i * 8;
+    if (o + 8 > v.byteLength) break;
+    roster.push({
+      id: [v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2)],
+      shader: v.getUint8(o + 3), flags: v.getUint8(o + 4),
+      fps: v.getUint8(o + 5), crest: v.getUint8(o + 6), ageS: v.getUint8(o + 7),
+    });
+  }
+  drawRoster();
+}
+
+function drawRoster() {
+  $('swarmHead').textContent = roster.length ? `Badges (${roster.length})` : 'Badges';
+  const host = $('roster');
+  host.innerHTML = '';
+  if (!roster.length) {
+    host.innerHTML = '<div class="card muted">No badges have announced themselves yet. ' +
+      'They beacon every couple of seconds &mdash; or press Roll call.</div>';
+    return;
+  }
+  for (const e of roster) {
+    const b = document.createElement('button');
+    b.className = 'card badge';
+    const hex = idHex(e);
+    const pins = [];
+    if (e.flags & F_PINNED) pins.push('<span class="pill pin">pinned</span>');
+    if (e.flags & F_CONDUCTING) pins.push('<span class="pill">conducting</span>');
+    if (!(e.flags & F_HEARING)) pins.push('<span class="pill gone">not hearing</span>');
+    if (e.ageS > 6) pins.push(`<span class="pill gone">${e.ageS}s ago</span>`);
+    b.innerHTML =
+      `<span class="id">${hex}</span>${pins.join(' ')}` +
+      `<span class="what">${names[e.shader] || '?'}<br>${e.fps} fps</span>`;
+    b.onclick = () => openSheet(e);
+    host.append(b);
+  }
+}
+
+// --- one badge --------------------------------------------------------------
+function openSheet(e) {
+  sheetFor = e;
+  const hex = idHex(e);
+  $('sheetId').textContent = hex;
+  $('sheetWhat').textContent = `${names[e.shader] || '?'} · ${e.fps} fps`;
+  effectButtons($('sheetFx'), i => send(OP.BADGE_EFFECT, idBytes(hex), i));
+  for (const b of document.querySelectorAll('#sheetFx .fx')) {
+    b.classList.toggle('on', Number(b.dataset.i) === e.shader);
+  }
+  $('sheet').showModal();
+}
+
+$('sheetFind').onclick = () => sheetFor && send(OP.BADGE_IDENTIFY, idBytes(idHex(sheetFor)), 6);
+$('sheetFree').onclick = async () => {
+  if (!sheetFor) return;
+  await send(OP.BADGE_RELEASE, idBytes(idHex(sheetFor)));
+  setTimeout(refreshRoster, 600);
+};
+$('sheetClose').onclick = () => $('sheet').close();
+$('sheet').addEventListener('close', () => { sheetFor = null; setTimeout(refreshRoster, 400); });
+</script>
