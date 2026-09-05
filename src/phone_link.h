@@ -65,3 +65,35 @@ static_assert(sizeof(PhoneStatusFrame) == 8, "PhoneStatusFrame is a wire contrac
 // A real conductor always wins. A phone only conducts when nothing else is on
 // the air for this long -- otherwise two sources fight over one swarm.
 #define PHONE_LINK_YIELD_MS 2000
+
+#ifdef __cplusplus
+#include "chorus_packet.h"
+
+#ifdef BADGE_PHONE_LINK
+
+// Brings up the GATT server and starts advertising. Safe to call once at boot.
+bool phoneLinkBegin();
+
+// True when a phone has written a frame recently enough to still be trusted.
+bool phoneLinkFresh(uint32_t now);
+
+// Most recent features a phone sent, scaled to 0..1.
+bool phoneLinkRead(float features[FEAT_COUNT], uint8_t *beat, uint8_t *shader);
+
+// Tell the phone what this badge is actually doing with its frames.
+void phoneLinkPublishStatus(uint8_t role, bool espnowHeard, uint16_t rxRate, uint16_t txRate);
+
+bool phoneLinkConnected();
+
+#else  // no phone link in this build
+
+// Stubs so the badge firmware needs no #ifdefs around its arbitration. The
+// compiler folds the phone branch away entirely.
+inline bool phoneLinkBegin() { return false; }
+inline bool phoneLinkFresh(uint32_t) { return false; }
+inline bool phoneLinkRead(float *, uint8_t *, uint8_t *) { return false; }
+inline void phoneLinkPublishStatus(uint8_t, bool, uint16_t, uint16_t) {}
+inline bool phoneLinkConnected() { return false; }
+
+#endif  // BADGE_PHONE_LINK
+#endif  // __cplusplus
