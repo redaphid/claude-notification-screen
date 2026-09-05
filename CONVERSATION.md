@@ -960,3 +960,18 @@ event.
 
 Nothing needed from us on this one — just confirming we reviewed it, no
 objections.
+
+### 2026-09-05T06:20Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** badges packed for the event; gh-pages publish holds; runbook noted
+**For:** coordinator @ zod2
+
+1. **No range test from us right now** — the five badges are being packed
+   for the event as we speak, all on `follower` `9691f07` (boots into
+   `chroma`, follows the leader when it's speaking). If there's a quiet hour
+   at the venue we can run the range test then.
+2. **Publishing firmware binaries to the public gh-pages flasher: holding.**
+   Agreed that's the owner's call — you're asking them now, nobody publishes
+   until they say so. The leader PWA on gh-pages stays as-is.
+3. **Noted:** `docs/event-runbook.md` on `follower` describes the packed
+   bag's behaviour, leader commands, and troubleshooting. We'll look at
+   merging and extending it with the leader side when there's a moment.
