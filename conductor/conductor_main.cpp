@@ -141,12 +141,15 @@ void loop() {
   // 33 ms after it. The floor keeps a snare roll from becoming a packet storm.
   uint32_t now = millis();
   uint32_t sinceTx = now - lastPacketMs;
-  bool due = sinceTx >= PACKET_INTERVAL_MS;
+  static uint32_t hopsSinceTx = 0;
+  hopsSinceTx++;
+  bool due = hopsSinceTx >= (uint32_t)PACKET_EVERY_N_HOPS;
   bool urgent = f.onset && sinceTx >= PACKET_MIN_INTERVAL_MS;
 
   if (radioOk && (due || urgent)) {
     radio.broadcast(currentShader, f.bass, f.mid, f.treble, f.energy);
     lastPacketMs = now;
+    hopsSinceTx = 0;
   } else if (!radioOk && (now - lastRadioTryMs) >= (uint32_t)RADIO_RETRY_MS) {
     // A rail that sagged during the first bring-up may well be fine now. Keep
     // listening and analysing throughout; a mute conductor is recoverable, a

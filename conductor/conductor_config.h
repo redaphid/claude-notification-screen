@@ -170,7 +170,19 @@
 // bricks itself over a failed antenna stage is worse than one that is briefly
 // mute -- it still has a mic and a screen, and the rail may simply need a moment.
 #define RADIO_RETRY_MS 5000
-#define PACKET_INTERVAL_MS 33  // ~30 Hz cadence
+// Cadence is expressed in ANALYSIS HOPS, not milliseconds, and that is
+// deliberate. The send decision is only ever evaluated once per hop, so a
+// millisecond interval silently rounds up to the next whole hop: 33ms against a
+// 16.1ms hop is never satisfied on the second hop (32.2ms, just short) and
+// always waits for the third, giving 48.3ms -- 20.7Hz, not the 30Hz intended.
+//
+// That was not caught here for a long time because the conductor's own counters
+// looked fine; it took four badges on another bench independently reporting
+// ~15 packets/sec to expose it. Counting hops makes the cadence exact and
+// removes the whole class of bug.
+//
+//   1 hop  = 62.5 Hz   2 hops = 31.25 Hz   3 hops = 20.8 Hz
+#define PACKET_EVERY_N_HOPS 2
 // An onset may jump the queue rather than wait out the cadence, but never faster
 // than this -- otherwise a snare roll becomes a packet storm.
 #define PACKET_MIN_INTERVAL_MS 8
