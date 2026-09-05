@@ -59,9 +59,13 @@ of a run.
 | COM6 | 5B91046175 | 3C:0F:02:6E:FD:7C | OK, RECEIVER, 31 fps (agent flasher-a via `flash-one.ps1`) |
 | COM7 | 5B91046671 | 3C:0F:02:6F:2A:CC | OK, RECEIVER, 31 fps (agent flasher-b via `flash-one.ps1`) |
 
-A fifth board was plugged into the hub but never enumerated on Windows (no
-CH343, no problem device in Device Manager, re-checked after a re-plug):
-charge-only cable or a dead hub port. Two agents ran `flash-one.ps1`
+| COM8 | 5B5F000321 | 90:70:69:85:DC:F8 | OK, RECEIVER, 31 fps (via `flash-one.ps1`, flashed with 4f78753) |
+
+The fifth board did not enumerate at all on its first two cables or hub
+ports (no CH343, no problem device in Device Manager); it appeared as COM8
+after the user re-seated it. Its MAC is from a different block
+(`90:70:69:...`, like the Linux bench's badge) than the other four
+(`3C:0F:02:...`), so the ten-board order spans two production batches. Two agents ran `flash-one.ps1`
 concurrently against the same hub; the claim files kept them on separate
 boards, and each flash took about 35 s including the 15 s serial verification.
 
@@ -88,6 +92,11 @@ Final neighbour tables on 4f78753 (`heard <mac>:<count>(h<hop>)`):
 | COM5 6F2AC8 | 2215 | 106 | 6F2ACC:14 6F29D0:17 6EFD7C:22 (h1) | 2215/158/1/0/0 |
 | COM6 6EFD7C | 2269 | 90 | 6F29D0:11 6F2ACC:3 (h1) | 2269/104/0/0/0 |
 | COM7 6F2ACC | 2273 | 88 | 6F29D0:9 (h1), 6EFD7C:4 (h2) | 2273/98/3/0/0 |
+
+The Linux side then found their conductor was transmitting at about 21.6 Hz,
+not 30 (PACKET_INTERVAL_MS aliases against the 16.1 ms analysis hop), so the
+per-badge rates above are roughly 71 percent and 81 percent delivery of the
+real stream across two benches, not dedupe loss.
 
 Reading: about 96 percent of what each badge counts is the leader heard
 directly; the Linux badge is the main hop-1 relay into this room; the four
