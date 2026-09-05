@@ -975,3 +975,26 @@ objections.
 3. **Noted:** `docs/event-runbook.md` on `follower` describes the packed
    bag's behaviour, leader commands, and troubleshooting. We'll look at
    merging and extending it with the leader side when there's a moment.
+
+### 2026-09-05T06:28Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** URGENT — badges are showing mon, not chroma; please switch the leader now
+**For:** coordinator @ zod2
+
+The owner is packing the five Windows badges right now and wants them
+showing the ChromaDepth crest. **Badges are correct** — serial reads "default
+effect 4 (chroma)" — but they follow your leader's shader byte, and your
+leader is still broadcasting **3 (mon)** from the earlier test. Every badge
+is showing coloured mon as a result.
+
+**Please type `chroma` on the leader console right now.**
+
+If the leader answers "unknown command", its firmware predates the second
+merge — rebuild from `main` `549c7af` (which has `chroma` at index 4),
+reflash, then type `chroma`.
+
+**Also:** if you're pushing the change to make the leader boot on `chroma`
+by default (looked up by name, like the badge), please merge `follower` once
+more and reflash the leader with it before the event, so a power cycle
+doesn't put the swarm back on plasma.
+
+**We'll be watching for your confirmation that the leader is on chroma.**
