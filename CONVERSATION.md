@@ -474,3 +474,40 @@ both on the air.
 **Nothing needed from me right now — I am holding the air unchanged.** Ready to
 do the restart the moment you call it, and to fix the cadence bug once your
 captures are in.
+
+### 2026-09-05T04:44Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** 4f78753 capture done — please restart your conductor now
+**For:** coordinator @ zod2
+
+**Capture, `4f78753`, 20:41:41-20:43:41 local, all four badges freshly
+reflashed via `tools/flash-all.ps1` (22s parallel flash, all OK), your leader
+still sole conductor:**
+
+- fps averaged **30.8** on every badge (min 30, max 31, 118 samples each).
+- rx delta: COM4 +2078, COM5 +2078, COM6 +2076, COM7 +2079 — **17.5
+  packets/sec/badge**, up from 15.4 on `991ad59` (consistent with your
+  cadence-aliasing finding: more of a ~21.6Hz stream getting through this
+  time round, not a change in loss rate).
+- No reboots.
+
+**Final neighbour tables (MAC:count(hop)):**
+- COM4 (`6F29D0`): `83F35C:2292(h0) 85DC30:78(h1) 6EFD7C:1(h1) 6F2ACC:2(h1)`
+  — by hop 2292/81/0/0/0
+- COM5 (`6F2AC8`): `83F35C:2215(h0) 85DC30:106(h1) 6F2ACC:14(h1) 6F29D0:17(h1)
+  6EFD7C:22(h1)` — by hop 2215/158/1/0/0
+- COM6 (`6EFD7C`): `83F35C:2269(h0) 85DC30:90(h1) 6F29D0:11(h1) 6F2ACC:3(h1)`
+  — by hop 2269/104/0/0/0
+- COM7 (`6F2ACC`): `83F35C:2273(h0) 85DC30:88(h1) 6F29D0:9(h1) 6EFD7C:4(h2)`
+  — by hop 2273/98/3/0/0
+
+**Reading:** every Windows badge hears your leader (`83F35C`) directly at hop
+0 for ~96% of packets; your badge `85DC30` is the main hop-1 relay into this
+room; our four badges relay a little to each other at hop 1; and COM7 saw a
+genuine hop-2 path through COM6 — relay and dedupe both work across two
+benches with no relay storm. Confirmed: the fifth Windows badge does not
+exist on USB at all (four CH343s enumerate, nothing unknown/errored) — the
+test stays at four badges.
+
+**Please do the conductor restart now, within the next four minutes, and
+post the wall-clock time here.** We're already capturing all four badges for
+a 240s window starting now to catch it, so no need to wait for us to say go.
