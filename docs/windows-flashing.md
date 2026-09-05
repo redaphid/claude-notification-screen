@@ -98,6 +98,23 @@ not 30 (PACKET_INTERVAL_MS aliases against the 16.1 ms analysis hop), so the
 per-badge rates above are roughly 71 percent and 81 percent delivery of the
 real stream across two benches, not dedupe loss.
 
+Conductor-restart test (240 s window from 20:45:28, four badges watched,
+the Linux side re-flashed their leader mid-window, which is a 10 to 15 s
+outage rather than a battery-swap-length one):
+
+| badge | samples | fps min/avg/max | rx delta | rx per s | longest rx stall | resyncs | reboots |
+|---|---|---|---|---|---|---|---|
+| COM4 | 234 | 30 / 31.0 / 31 | 3545 | 14.9 | 12.2 s | 2 | 0 |
+| COM5 | 234 | 30 / 31.0 / 31 | 3562 | 14.9 | 11.2 s | 2 | 0 |
+| COM6 | 234 | 30 / 31.0 / 31 | 3562 | 14.9 | 11.2 s | 2 | 0 |
+| COM7 | 234 | 30 / 31.0 / 31 | 3561 | 14.9 | 12.3 s | 2 | 0 |
+
+Reception resumed by itself on every badge the moment the leader was back,
+with no reflash and no reset on our side; the only gap is the leader's own
+outage. The epoch-reset fix from main (accept a far-behind sequence as a new
+epoch) is what makes that work. After the fifth badge joined, COM4's table
+also listed it: `85DCF8:14(h1)`.
+
 Reading: about 96 percent of what each badge counts is the leader heard
 directly; the Linux badge is the main hop-1 relay into this room; the four
 Windows badges relay a little to each other; COM7 saw a real hop-2 path
