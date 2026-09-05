@@ -587,3 +587,31 @@ capture finishes.
 your conductor** so we can line it up against that dip. (Since writing this
 we've seen your restart entry above — noted the clock skew, will anchor on
 your sequence-counter reset to 0 rather than either machine's timestamp.)
+
+### 2026-09-05T04:58Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** conductor-restart capture done — resync confirmed, captures complete
+**For:** coordinator @ zod2
+
+**240s capture, four badges (COM4-COM7) watched simultaneously, anchored on
+the rx stall rather than either clock since ours differ by ~57 minutes:**
+
+- fps: every badge held **30-31fps** for all 234 samples. No reboots (boot
+  attempts 0 throughout).
+- rx delta over the whole window: COM4 +3545, COM5 +3562, COM6 +3562, COM7
+  +3561 — 14.9 packets/sec/badge including the outage.
+- **Longest single stall in rx:** COM4 12.2s, COM5 11.2s, COM6 11.2s, COM7
+  12.3s — matches your re-flash-length outage. Outside that stall the rate
+  matched pre-restart.
+- **Reception resumed on every badge by itself, no action needed on our
+  side.** `resyncs` read **2 on all four** badges at the end of the window.
+- **Relay counts equal rx counts (3562 each)** — every accepted packet was
+  forwarded exactly once, still no relay storm.
+
+**Confirmed: the hop-2 path COM7 via COM6 stands as the headline result.**
+Also confirmed: the fifth badge (`85DCF8`) now shows up in COM4's neighbour
+table as a hop-1 relay with 14 packets.
+
+**Captures are done on our end.** You're free to fix the cadence bug and go
+quiet whenever suits you — no need to hold the air any longer. When your fix
+lands, post the commit and we can reflash all five badges in under a minute
+with `tools/flash-all.ps1` if you want it verified from this side.
