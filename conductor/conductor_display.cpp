@@ -9,6 +9,7 @@
 #include "Panel_SPD2010.hpp"
 #include "../effects/effect.h"
 #include "../effects/effects.h"
+#include "../effects/effect_common.h"
 
 namespace {
 
@@ -142,6 +143,19 @@ bool conductorDisplayInit() {
     return false;
   }
   display.setBrightness(200);
+
+  // Same trick that settled the badge: unmistakable full-screen fills straight
+  // through the panel API, before any sprite or effect is involved. If these
+  // show, the QSPI transport and init sequence are good and any remaining
+  // problem is in the sprite path. Readable through a webcam from across a room.
+  struct Card { const char *name; uint8_t r, g, b; };
+  static const Card cards[] = {
+      {"RED", 255, 0, 0}, {"GREEN", 0, 255, 0}, {"BLUE", 0, 0, 255}, {"WHITE", 255, 255, 255}};
+  for (const auto &c : cards) {
+    display.fillScreen(display.color888(c.r, c.g, c.b));
+    Serial.printf("[leader selftest] %s\n", c.name);
+    delay(1200);
+  }
   display.fillScreen(0);
 
   // The effects render at 240x240; the panel is 412x412. Draw into a sprite at
@@ -157,6 +171,12 @@ bool conductorDisplayInit() {
 
   for (int i = 0; i < effects_count; i++) {
     if (effects_all[i]->init) effects_all[i]->init();
+  }
+  // The effects degrade to black rather than crashing when their LUT cannot be
+  // allocated, which on a panel is indistinguishable from a dead display. Check
+  // it once, out loud, so the next person does not debug the wrong layer.
+  if (effect_polar == NULL) {
+    Serial.println("[leader] WARNING: effect LUT allocation failed -- effects will render BLACK");
   }
 
   displayReady = true;
@@ -212,10 +232,13 @@ void renderFrame(const FrameSnapshot &snap) {
     canvas.drawCircle(EFFECT_W / 2, EFFECT_H / 2, 110, canvas.color888(255, 255, 255));
   }
 
-  // 240 -> 412 is 1.716x; pushRotateZoom centres it on the round panel.
+  // Straight 1:1 blit, centred, with a black ring around it on the larger
+  // panel. pushRotateZoom's scale-up looked like a uniform wash on hardware and
+  // also cost CPU this loop cannot spare; a plain push is both correct and
+  // cheaper. Filling the full 412 circle needs effects that render at 412,
+  // which the frozen effect contract deliberately does not do.
   const uint32_t t0 = micros();
-  canvas.pushRotateZoom(&display, LCD_W / 2, LCD_H / 2, 0.0f, LCD_W / (float)EFFECT_W,
-                        LCD_H / (float)EFFECT_H);
+  canvas.pushSprite(&display, (LCD_W - EFFECT_W) / 2, (LCD_H - EFFECT_H) / 2);
   lastDrawUs = micros() - t0;
 }
 
