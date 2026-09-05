@@ -124,6 +124,19 @@ static void handleSerialLine(String line) {
   Serial.printf("[conductor] unknown command '%s' (try ?)\n", line.c_str());
 }
 
+// What the leader broadcasts until someone types otherwise. Named, so it
+// follows the registry; "chroma" so a power cycle at the event brings the
+// swarm up on the ChromaDepth crests rather than plasma.
+#ifndef CONDUCTOR_DEFAULT_EFFECT_NAME
+#define CONDUCTOR_DEFAULT_EFFECT_NAME "chroma"
+#endif
+static int resolveDefaultShader() {
+  for (int i = 0; i < effects_count; i++) {
+    if (strcmp(effects_all[i]->name, CONDUCTOR_DEFAULT_EFFECT_NAME) == 0) return i;
+  }
+  return 0;
+}
+
 static void pollSerial() {
   static String pending;
   while (Serial.available()) {
@@ -192,6 +205,7 @@ void setup() {
   }
 
   displayOk = conductorDisplayInit();
+  setShader(resolveDefaultShader());  // after the display exists, so its panel follows too
   if (!displayOk) {
     Serial.println("[conductor] no display -- continuing headless, audio still runs");
   }

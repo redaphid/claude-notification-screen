@@ -73,6 +73,23 @@ Second pass, after merging main at 4f78753 (badges report neighbours and hop
 distance): `flash-all.ps1` rebuilt in 22 s and reflashed all four in parallel
 in 22 s, all OK.
 
+## Packing pass, 2026-09-04 evening
+
+Final build for the bag: `follower` 9691f07, env `waveshare_esp32s3_lcd128`
+(989,701 bytes). Boots into the ChromaDepth crest, follows the leader's
+shader byte while a conductor is heard, reverts to chroma 10 s after silence.
+Flashed with `tools/flash.ps1 -SkipBuild -VerifySeconds 20` as badges were
+unplugged and re-plugged one at a time; the loop tracks boards by USB serial
+so each got exactly one pass. Earlier in the evening the same five went
+through `badge_mon` (pinned crests, 28-29 fps), `badge_chroma` (27-28 fps)
+and the plain follow build (32 fps on plasma). See `docs/event-runbook.md`
+for what the packed badges do and how to drive them.
+
+Two flasher bugs found and fixed during this pass: `flash-all.ps1`'s
+sequential path splatted its argument array positionally (so the results
+directory landed in `-VerifySeconds`), and both flashers now force-append to
+`flash-log.csv` because their column sets differ.
+
 ## Cross-bench mesh test, 2026-09-04
 
 The Linux bench's leader (`44:1B:F6:83:F3:5C`, shows as `83F35C`) was on the

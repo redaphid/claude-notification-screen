@@ -602,16 +602,13 @@ void loop() {
     // No conductor in earshot: decay toward stillness rather than freezing on
     // the last packet, so a badge that walks out of range exhales.
     heard = rxSeen && (now - lastMs) <= FEATURE_STALE_MS;
-<<<<<<< HEAD
     activeSource = heard ? SRC_ESPNOW : SRC_NONE;
-=======
 #ifndef BADGE_LOCK_EFFECT
     // "Everyone switch to 3" while a conductor is talking; once it has been
     // gone a while, settle back onto this badge's own default look.
     if (heard) activeShader = packetShader;
     else if (now - lastMs > DEFAULT_REVERT_MS) activeShader = defaultShader;
 #endif
->>>>>>> 9691f07 (Badges boot on the ChromaDepth crest and follow the leader when it speaks)
   }
 
   // Drain queued relays here, in loop context, where esp_now_send() is safe.
