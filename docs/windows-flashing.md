@@ -60,10 +60,40 @@ of a run.
 | COM7 | 5B91046671 | 3C:0F:02:6F:2A:CC | OK, RECEIVER, 31 fps (agent flasher-b via `flash-one.ps1`) |
 
 A fifth board was plugged into the hub but never enumerated on Windows (no
-CH343, no problem device in Device Manager): charge-only cable or a dead hub
-port. Two agents ran `flash-one.ps1` concurrently against the same hub; the
-claim files kept them on separate boards, and each flash took about 35 s
-including the 15 s serial verification.
+CH343, no problem device in Device Manager, re-checked after a re-plug):
+charge-only cable or a dead hub port. Two agents ran `flash-one.ps1`
+concurrently against the same hub; the claim files kept them on separate
+boards, and each flash took about 35 s including the 15 s serial verification.
+
+Second pass, after merging main at 4f78753 (badges report neighbours and hop
+distance): `flash-all.ps1` rebuilt in 22 s and reflashed all four in parallel
+in 22 s, all OK.
+
+## Cross-bench mesh test, 2026-09-04
+
+The Linux bench's leader (`44:1B:F6:83:F3:5C`, shows as `83F35C`) was on the
+air the whole time, so it served as the sole conductor and all four Windows
+badges were receivers. `tools/watch-badges.ps1` watched all four at once.
+
+| firmware | window | fps (min/avg/max) | rx per badge per s | notes |
+|---|---|---|---|---|
+| 991ad59 | 120 s | 31 / 31.0 / 31 | 15.4 | rx deltas 1831, 1831, 1816, 1833; no reboots |
+| 4f78753 | 120 s | 30 / 30.8 / 31 | 17.5 | rx deltas 2078, 2078, 2076, 2079; no reboots |
+
+Final neighbour tables on 4f78753 (`heard <mac>:<count>(h<hop>)`):
+
+| badge | direct from leader (h0) | via Linux badge 85DC30 (h1) | via Windows badges | by hop |
+|---|---|---|---|---|
+| COM4 6F29D0 | 2292 | 78 | 6EFD7C:1 6F2ACC:2 (h1) | 2292/81/0/0/0 |
+| COM5 6F2AC8 | 2215 | 106 | 6F2ACC:14 6F29D0:17 6EFD7C:22 (h1) | 2215/158/1/0/0 |
+| COM6 6EFD7C | 2269 | 90 | 6F29D0:11 6F2ACC:3 (h1) | 2269/104/0/0/0 |
+| COM7 6F2ACC | 2273 | 88 | 6F29D0:9 (h1), 6EFD7C:4 (h2) | 2273/98/3/0/0 |
+
+Reading: about 96 percent of what each badge counts is the leader heard
+directly; the Linux badge is the main hop-1 relay into this room; the four
+Windows badges relay a little to each other; COM7 saw a real hop-2 path
+through COM6. No relay storm, dedupe holding. Shader byte from the leader is
+0, so every HUD reads "plasma".
 
 All ESP32-S3 (QFN56) rev v0.2, 2MB embedded PSRAM, 16MB quad flash. Every
 badge reported `rx` packets within seconds of boot, so a conductor was already
