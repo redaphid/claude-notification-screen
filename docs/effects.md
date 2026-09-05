@@ -76,7 +76,12 @@ pio run -t upload                    # one badge (Linux; port from platformio.in
 .\tools\flash-all.ps1                # Windows: every badge on the hub, in parallel
 ```
 
-Every badge shows the effect the conductor's shader byte names. On the
+Every badge shows the effect the conductor's shader byte names while a
+conductor is heard. On its own (at boot, and 10 s after the conductor goes
+quiet) a badge shows its default effect, `BADGE_DEFAULT_EFFECT_NAME` in
+`src/main.cpp`, "chroma" unless a build flag says otherwise; it is looked up
+by name so the registry can grow. Envs `badge_mon` and `badge_chroma` pin an
+effect regardless of the conductor. On the
 leader's serial console: `shader 4`, `ripple`, `next`, `prev`, `cycle 20000`,
 `?`. A badge that was made conductor by holding BOOT at reset takes the same
 commands. The leader's own panel follows the same byte.
