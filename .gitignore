@@ -5,3 +5,4 @@ outputs/
 harness/build/
 web/firmware/
 web/manifest.json
+flash-results/
