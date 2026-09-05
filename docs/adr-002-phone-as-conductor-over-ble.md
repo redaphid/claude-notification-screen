@@ -77,10 +77,28 @@ identity to break the tie and it is frozen, so this is documented rather than
 solved. If it matters, the v2 packet should carry a source id and a priority —
 see `docs/chorus-packet-v2-proposal.md`.
 
-**Reception cost is not yet quantified.** We know coexistence forces WiFi modem
-sleep; we have not measured how many ESP-NOW packets a phone-link badge drops
-compared to a plain one, side by side. That measurement should happen before this
-merges.
+**Reception cost: measured, and smaller than expected.** Same badge, same leader
+transmitting at ~32 pkt/s, three builds back to back, 30 samples each:
+
+| build | ESP-NOW reception |
+|---|---|
+| plain badge (no BLE) | **28.9 pkt/s** |
+| BLE advertising, no phone connected | **28.9 pkt/s** |
+| BLE + phone writing at 30Hz | **28.8 pkt/s** |
+
+**There is no measurable cost at this range.** An earlier draft of this document
+asserted the phone build "pays for it in ESP-NOW reception". That claim was
+reasoning from the mechanism -- coexistence forces modem sleep, therefore
+reception must suffer -- and the measurement does not support it. The mechanism
+is real; the consequence was assumed. Corrected here rather than quietly
+softened, because the difference between "we measured" and "it stands to reason"
+is the whole point of having hardware on the desk.
+
+**The caveat that remains:** this was measured with the badge a few feet from the
+leader, where the link has margin to spare. Modem sleep costs airtime, and
+airtime matters most when signal is marginal. **At range, or through a crowd,
+the cost could be real and this measurement would not have caught it.** Anyone
+considering BLE as a default should repeat it at distance before doing so.
 
 ## Bench tooling this produced
 
