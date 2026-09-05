@@ -149,6 +149,58 @@ static void effectsInit() {
   Serial.printf("[badge] %d effects registered\n", effects_count);
 }
 
+// When a badge is the conductor (BOOT held at reset), its serial console picks
+// what the swarm shows, the same way the leader's does:
+//   shader <n> | s <n> | <n> | plasma | tunnel | iris | mon | next | prev | ?
+static uint8_t conductorShader = 0;
+
+static void setConductorShader(int index) {
+  if (effects_count <= 0) return;
+  index = ((index % effects_count) + effects_count) % effects_count;
+  conductorShader = (uint8_t)index;
+  Serial.printf("[badge] shader -> %u (%s)\n", (unsigned)conductorShader, effects_all[conductorShader]->name);
+}
+
+static void handleSerialLine(String line) {
+  line.trim();
+  line.toLowerCase();
+  if (line.isEmpty()) return;
+  if (!isConductor) {
+    Serial.println("[badge] receiver: the conductor picks the shader (hold BOOT at reset to lead)");
+    return;
+  }
+  if (line == "?" || line == "help") {
+    Serial.printf("[badge] shader %u of %d:", (unsigned)conductorShader, effects_count);
+    for (int i = 0; i < effects_count; i++) Serial.printf(" %d=%s", i, effects_all[i]->name);
+    Serial.println();
+    return;
+  }
+  if (line == "next" || line == "n") { setConductorShader(conductorShader + 1); return; }
+  if (line == "prev" || line == "p") { setConductorShader(conductorShader - 1); return; }
+  String arg = line;
+  if (line.startsWith("shader")) arg = line.substring(6);
+  else if (line.startsWith("s ")) arg = line.substring(2);
+  arg.trim();
+  for (int i = 0; i < effects_count; i++) {
+    if (arg == effects_all[i]->name) { setConductorShader(i); return; }
+  }
+  if (!arg.isEmpty() && isDigit(arg[0])) { setConductorShader(arg.toInt()); return; }
+  Serial.printf("[badge] unknown command '%s' (try ?)\n", line.c_str());
+}
+
+static void pollSerial() {
+  static String pending;
+  while (Serial.available()) {
+    const char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (!pending.isEmpty()) handleSerialLine(pending);
+      pending = "";
+    } else if (pending.length() < 64) {
+      pending += c;
+    }
+  }
+}
+
 // Which family crest this badge wears in the "mon" effect. Keyed on the last
 // three MAC bytes so the mapping survives reflashes and the same badge is
 // always the same bead; a badge not in the table hashes into the set, which
@@ -417,6 +469,7 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+  pollSerial();
 
   // --- conductor: analyse (for now, pretend to) and broadcast ---
   static uint32_t lastSendMs = 0;
@@ -432,7 +485,7 @@ void loop() {
       memcpy(pkt.magic, CHORUS_MAGIC, 4);
       pkt.seq = seq++;
       pkt.hop = 0;
-      pkt.shader = 0;
+      pkt.shader = conductorShader;
       for (int i = 0; i < FEAT_COUNT; i++) pkt.features[i] = target[i];
       broadcast(pkt);
     }
@@ -501,10 +554,11 @@ void loop() {
   frames++;
   if (now - lastReportMs >= 1000) {
     fps = frames * 1000 / (now - lastReportMs);
-    Serial.printf("[badge] %s %lu fps | bass %.2f mid %.2f treble %.2f energy %.2f | rx %lu relay %lu\n",
+    Serial.printf("[badge] %s %lu fps | bass %.2f mid %.2f treble %.2f energy %.2f | rx %lu relay %lu | fx %s\n",
                   isConductor ? "CONDUCTOR" : "RECEIVER", (unsigned long)fps,
                   shown[FEAT_BASS], shown[FEAT_MID], shown[FEAT_TREBLE],
-                  shown[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount);
+                  shown[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount,
+                  effects_by_index(activeShader)->name);
     if (txOk || txFail) {
       Serial.printf("[badge] tx ok %lu fail %lu | resyncs %lu | boot attempts %lu\n",
                     (unsigned long)txOk, (unsigned long)txFail,
