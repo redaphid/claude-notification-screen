@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0b0b10">
+<title>Chorus leader</title>
+<link rel="manifest" href="leader.webmanifest">
+<link rel="icon" href="icons/leader-192.png">
+<link rel="apple-touch-icon" href="icons/leader-192.png">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b0b10; color: #eee; font: 16px/1.4 system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+  h1 img { width: 28px; height: 28px; border-radius: 6px; }
+  .sub { color: #9a9ab0; margin: 0 0 16px; font-size: 14px; }
+  button { font: inherit; border: 0; border-radius: 12px; padding: 14px 16px; cursor: pointer; background: #22223a; color: #eee; }
+  button:disabled { opacity: .45; cursor: default; }
+  button:active:not(:disabled) { transform: scale(0.98); }
+  button.primary { background: #4c6ef5; color: #fff; width: 100%; font-size: 18px; }
+  button.on { background: #f5a04c; color: #100; }
+  .row { display: flex; gap: 10px; align-items: center; margin: 10px 0; }
+  .row > * { flex: 1; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin: 8px 0 14px; }
+  .grid button { padding: 18px 8px; font-size: 17px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #9a9ab0; margin: 18px 0 6px; }
+  input[type=text] { font: inherit; background: #15151f; color: #eee; border: 1px solid #2c2c44; border-radius: 10px; padding: 12px; width: 100%; box-sizing: border-box; }
+  input[type=range] { width: 100%; }
+  #log { background: #15151f; border-radius: 12px; padding: 10px 12px; height: 220px; overflow: auto; font: 12px/1.45 ui-monospace, monospace; color: #b8b8cc; white-space: pre-wrap; word-break: break-all; }
+  #log .tx { color: #f5a04c; }
+  #log .hi { color: #8be28b; }
+  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; background: #22223a; font-size: 13px; color: #c8c8dc; }
+  .pill.ok { background: #1f4d2b; color: #b5f0c0; }
+  .pill.off { background: #4d1f1f; color: #f0b5b5; }
+  .err { color: #ff7b7b; margin-top: 10px; min-height: 1.2em; }
+  .hint { color: #7a7a90; font-size: 13px; margin-top: 18px; }
+  #install { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1><img src="icons/leader-192.png" alt=""> Chorus leader</h1>
+  <p class="sub">Plug the leader in over USB and pick what every badge shows. Works offline once installed.</p>
+
+  <div class="row">
+    <button class="primary" id="connect">Connect to the leader</button>
+    <button id="install" title="Install as an app">Install</button>
+  </div>
+  <div class="row" style="justify-content:flex-start;gap:8px">
+    <span class="pill" id="linkState">not connected</span>
+    <span class="pill" id="netState"></span>
+    <span class="pill" id="current">shader: ?</span>
+  </div>
+  <div class="err" id="err"></div>
+
+  <h2>Effect</h2>
+  <div class="grid" id="effects"></div>
+  <div class="row">
+    <button id="prev" disabled>&larr; prev</button>
+    <button id="next" disabled>next &rarr;</button>
+    <button id="ask" disabled>refresh (?)</button>
+  </div>
+
+  <h2>Auto-cycle</h2>
+  <div class="row">
+    <input type="range" id="cycle" min="0" max="120" step="5" value="0" disabled>
+    <span id="cycleLabel" style="flex:0 0 7em">hold</span>
+    <button id="cycleApply" disabled style="flex:0 0 auto">apply</button>
+  </div>
+
+  <h2>Command</h2>
+  <form class="row" id="cmdForm">
+    <input type="text" id="cmd" placeholder="anything the leader understands, e.g. shader 3" autocomplete="off" disabled>
+    <button type="submit" id="send" disabled style="flex:0 0 auto">send</button>
+  </form>
+
+  <h2>Serial</h2>
+  <div id="log"></div>
+
+  <p class="hint">Needs Web Serial: Chrome or Edge on a laptop or an Android phone with a USB-C cable. On iPhone there is no Web Serial at all. The leader is the 1.46 board (native USB); a badge that was made conductor by holding BOOT at reset takes the same commands over its CH343 port.</p>
+</main>
+<script>
+// Commands the firmware understands (conductor/conductor_main.cpp, src/main.cpp):
+//   shader <n> | <effect name> | next | prev | cycle <ms> | ?
+// It answers "[conductor] shader -> 3 (mon)" on every change and
+// "[conductor] shader 3 of 5: 0=plasma 1=tunnel ..." to "?".
+const $ = id => document.getElementById(id);
+let port = null, writer = null, reader = null, effects = [], current = -1, cycleMs = 0;
+let lineBuf = '';
+
+// ---- offline-first: service worker + install prompt ----------------------
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('leader-sw.js');
+let installEvent = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvent = e; $('install').style.display = ''; });
+$('install').onclick = async () => { if (!installEvent) return; installEvent.prompt(); await installEvent.userChoice; installEvent = null; $('install').style.display = 'none'; };
+function netState() { const n = $('netState'); n.textContent = navigator.onLine ? 'online' : 'offline, still works'; n.className = 'pill ' + (navigator.onLine ? '' : 'ok'); }
+window.addEventListener('online', netState); window.addEventListener('offline', netState); netState();
+
+// ---- serial ----------------------------------------------------------------
+$('connect').onclick = async () => {
+  $('err').textContent = '';
+  if (!('serial' in navigator)) { $('err').textContent = 'This browser has no Web Serial. Use Chrome or Edge.'; return; }
+  if (port) { await disconnect(); return; }
+  try {
+    port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }, { usbVendorId: 0x1a86 }, { usbVendorId: 0x10c4 }] });
+    await port.open({ baudRate: 115200 });
+    // DTR on so a native-USB (CDC) leader talks; RTS off so a CH343 badge is not held in reset.
+    try { await port.setSignals({ dataTerminalReady: true, requestToSend: false }); } catch (e) {}
+    port.addEventListener('disconnect', () => disconnect(true));
+    const enc = new TextEncoderStream(); enc.readable.pipeTo(port.writable); writer = enc.writable.getWriter();
+    readLoop();
+    setLinked(true);
+    $('connect').textContent = 'Disconnect';
+    log('connected', 'hi');
+    setTimeout(() => send('?'), 300);
+  } catch (e) { $('err').textContent = e.message || String(e); port = null; }
+};
+
+async function disconnect(lost) {
+  setLinked(false);
+  $('connect').textContent = 'Connect to the leader';
+  try { if (reader) await reader.cancel(); } catch (e) {}
+  try { if (writer) await writer.close(); } catch (e) {}
+  try { if (port && !lost) await port.close(); } catch (e) {}
+  port = null; writer = null; reader = null;
+  log(lost ? 'leader unplugged' : 'disconnected', 'hi');
+}
+
+async function readLoop() {
+  const dec = new TextDecoderStream();
+  port.readable.pipeTo(dec.writable).catch(() => {});
+  reader = dec.readable.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      lineBuf += value;
+      let i;
+      while ((i = lineBuf.indexOf('\n')) >= 0) { handleLine(lineBuf.slice(0, i).replace(/\r$/, '')); lineBuf = lineBuf.slice(i + 1); }
+    }
+  } catch (e) { /* cancelled or unplugged */ }
+}
+
+function handleLine(line) {
+  if (!line) return;
+  let m;
+  if ((m = line.match(/shader -> (\d+) \((\w+)\)/))) { current = +m[1]; if (!effects[current]) effects[current] = m[2]; render(); }
+  else if ((m = line.match(/shader (\d+) of (\d+):((?:\s+\d+=\w+)+)(?:\s+cycle=(\d+) ms)?/))) {
+    current = +m[1];
+    effects = [];
+    for (const [, i, name] of m[3].matchAll(/(\d+)=(\w+)/g)) effects[+i] = name;
+    if (m[4] !== undefined) { cycleMs = +m[4]; $('cycle').value = Math.min(120, Math.round(cycleMs / 1000)); cycleLabel(); }
+    render();
+  } else if ((m = line.match(/cycle -> (\d+) ms/))) { cycleMs = +m[1]; }
+  log(line, /shader|cycle|unknown|\[conductor\]/.test(line) ? 'hi' : '');
+}
+
+async function send(cmd) {
+  if (!writer) return;
+  try { await writer.write(cmd + '\n'); log('> ' + cmd, 'tx'); } catch (e) { $('err').textContent = e.message; }
+}
+
+function render() {
+  const fx = $('effects'); fx.innerHTML = '';
+  effects.forEach((name, i) => {
+    if (!name) return;
+    const b = document.createElement('button');
+    b.textContent = `${i} ${name}`;
+    if (i === current) b.classList.add('on');
+    b.onclick = () => send(name);
+    fx.appendChild(b);
+  });
+  $('current').textContent = current >= 0 ? `shader: ${current} ${effects[current] || ''}` : 'shader: ?';
+}
+
+function setLinked(on) {
+  const s = $('linkState'); s.textContent = on ? 'connected' : 'not connected'; s.className = 'pill ' + (on ? 'ok' : 'off');
+  for (const id of ['prev', 'next', 'ask', 'cycle', 'cycleApply', 'cmd', 'send']) $(id).disabled = !on;
+}
+
+function cycleLabel() { const s = +$('cycle').value; $('cycleLabel').textContent = s ? `every ${s} s` : 'hold'; }
+$('cycle').oninput = cycleLabel;
+$('cycleApply').onclick = () => send('cycle ' + (+$('cycle').value * 1000));
+$('prev').onclick = () => send('prev');
+$('next').onclick = () => send('next');
+$('ask').onclick = () => send('?');
+$('cmdForm').onsubmit = e => { e.preventDefault(); const c = $('cmd').value.trim(); if (c) { send(c); $('cmd').value = ''; } };
+
+function log(text, cls) {
+  const el = $('log'); const line = document.createElement('div');
+  if (cls) line.className = cls;
+  line.textContent = text; el.appendChild(line);
+  while (el.childElementCount > 400) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+setLinked(false); render();
+</script>
+</body>
+</html>

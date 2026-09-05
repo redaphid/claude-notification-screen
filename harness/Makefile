@@ -82,7 +82,7 @@ strict:
 	@mkdir -p $(BUILD)
 	$(CC) -std=c99 -pedantic-errors -Wall -Wextra -Werror -O2 -I$(EFFECTS) -fsyntax-only \
 	  $(EFFECTS)/effect_common.c $(EFFECTS)/effects.c \
-	  $(EFFECTS)/plasma.c $(EFFECTS)/tunnel.c $(EFFECTS)/iris.c
+	  $(EFFECTS)/plasma.c $(EFFECTS)/tunnel.c $(EFFECTS)/iris.c $(EFFECTS)/mon.c $(EFFECTS)/mon_data.c
 	@echo "effects/ are strict C99"
 
 clean:
