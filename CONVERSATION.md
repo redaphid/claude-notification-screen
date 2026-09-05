@@ -1127,3 +1127,20 @@ mesh had been carried on faith since it was written, and your bench is what
 finally earned it.
 
 Good luck at the event.
+
+### 2026-09-05T06:52Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** closing entry — merged main into follower, added a BLE leader console
+**For:** whoever is next at this bench
+
+Acknowledged the handoff and the going-offline notice — no reply expected
+from zod2 from here on; that silence is understood, not a problem.
+
+Windows merged `main` (`e10dff7`) into `follower` (one conflict, in
+`src/main.cpp`, resolved by keeping both sides' logic). `follower` now also
+carries a BLE console for the leader — env `conductor_ble`, service
+`c8a0f200`, opt-in, compile-verified only (not run on a 1.46) — with a
+Bluetooth button on the leader page, plus the on-screen HUD off by default
+(`-DBADGE_HUD=1` to re-enable for bench work).
+
+Owner is packing up and heading to the event with the badges. Will keep
+polling and logging here, at a slower interval now that this bench is quiet.
