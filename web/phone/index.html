@@ -139,6 +139,15 @@
 </div>
 
 <div class="frame">
+  <h2>MIDI</h2>
+  <div class="sink-row">
+    <span id="midi-status">Checking for Web MIDI...</span>
+    <button id="btn-midi-reset" type="button" hidden>Forget mapping</button>
+  </div>
+  <pre id="midi-map">No controller assigned. The sliders above work regardless.</pre>
+</div>
+
+<div class="frame">
   <h2>PhoneFeatureFrame preview</h2>
   <pre id="frame-json">{}</pre>
 </div>
@@ -277,6 +286,125 @@
 
   btn.addEventListener('click', () => (timer ? stopSink() : startSink()));
 
+  // --- Stage C: Web MIDI. Lifted from paper-cranes src/midi.js and
+  // --- src/midi/MidiMapper.js - same zero-config auto-assign (a per-device
+  // --- profile keyed on cc:channel, claiming the next free slot), same
+  // --- absolute-vs-relative encoder heuristic. Not a second MIDI layer.
+  const SLOTS = ['bass', 'mid', 'treble', 'energy'];
+  const STORE_KEY = 'chorus.midi.profiles.v1';
+  const BASE_SENSITIVITY = 0.01; // relative encoders move by deltas, not values
+
+  const midiStatusEl = document.getElementById('midi-status');
+  const midiMapEl = document.getElementById('midi-map');
+  const midiResetBtn = document.getElementById('btn-midi-reset');
+
+  const loadProfiles = () => {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; }
+    catch { return {}; }
+  };
+  const saveProfiles = (p) => {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(p)); } catch {}
+  };
+
+  let profiles = loadProfiles();
+  const absoluteKnobs = new Set();
+
+  function renderMidiMap() {
+    const rows = [];
+    for (const [device, profile] of Object.entries(profiles)) {
+      for (const [key, slot] of Object.entries(profile)) {
+        rows.push(device + '  cc' + key.replace(':', ' ch') + ' -> ' + slot.toUpperCase());
+      }
+    }
+    midiMapEl.textContent = rows.length
+      ? rows.join('\n')
+      : 'No controller assigned yet. Turn any knob to claim the next slot.';
+    midiResetBtn.hidden = rows.length === 0;
+  }
+
+  // Zero-config: first knob touched takes BASS, next MID, and so on.
+  function assignSlot(deviceName, key) {
+    const profile = (profiles[deviceName] = profiles[deviceName] || {});
+    if (profile[key]) return profile[key];
+    const taken = new Set(Object.values(profile));
+    const free = SLOTS.find((s) => !taken.has(s));
+    if (!free) return null; // all four claimed; ignore extra knobs
+    profile[key] = free;
+    saveProfiles(profiles);
+    renderMidiMap();
+    return free;
+  }
+
+  // A controller sending values in the middle of the range is an absolute
+  // pot. Relative encoders only ever emit small deltas around 0/127.
+  function isAbsolute(key, value) {
+    if (value >= 30 && value <= 100) absoluteKnobs.add(key);
+    return absoluteKnobs.has(key);
+  }
+
+  function applyMidi(slot, key, value) {
+    let next;
+    if (isAbsolute(key, value)) {
+      next = value / 127;
+    } else {
+      const delta = value <= 63
+        ? BASE_SENSITIVITY * value
+        : -(BASE_SENSITIVITY * (128 - value));
+      next = state[slot] + delta;
+    }
+    next = Math.max(0, Math.min(1, next));
+    state[slot] = next;
+    document.getElementById('s-' + slot).value = String(next);
+    document.getElementById('v-' + slot).textContent = next.toFixed(2);
+    render();
+  }
+
+  function attachInput(input) {
+    input.addEventListener('midimessage', (msg) => {
+      const [command, control, value] = msg.data;
+      if ((command & 0xf0) !== 0xb0) return; // control change only
+      const channel = (command & 0x0f) + 1;
+      const device = input.name || 'Unknown MIDI Device';
+      const key = control + ':' + channel;
+      const slot = (profiles[device] && profiles[device][key]) || assignSlot(device, key);
+      if (slot) applyMidi(slot, device + '|' + key, value);
+    });
+  }
+
+  function describeInputs(access) {
+    const names = [];
+    access.inputs.forEach((i) => names.push(i.name || 'unnamed'));
+    midiStatusEl.textContent = names.length
+      ? 'MIDI ready: ' + names.join(', ') + '. Turn a knob to assign it.'
+      : 'Web MIDI works, but no controller is connected. Sliders still work.';
+  }
+
+  if (!navigator.requestMIDIAccess) {
+    midiStatusEl.textContent =
+      'This browser has no Web MIDI, so a controller cannot be used here. The sliders above still work.';
+  } else {
+    navigator.requestMIDIAccess().then((access) => {
+      access.inputs.forEach(attachInput);
+      describeInputs(access);
+      access.addEventListener('statechange', (e) => {
+        if (e.port.type === 'input' && e.port.state === 'connected') attachInput(e.port);
+        describeInputs(access);
+      });
+    }).catch((err) => {
+      midiStatusEl.textContent =
+        'Web MIDI was blocked (' + (err && err.name ? err.name : 'denied') +
+        '). The sliders above still work.';
+    });
+  }
+
+  midiResetBtn.addEventListener('click', () => {
+    profiles = {};
+    absoluteKnobs.clear();
+    saveProfiles(profiles);
+    renderMidiMap();
+  });
+
+  renderMidiMap();
   render();
 </script>
 </body>
