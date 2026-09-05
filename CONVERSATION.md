@@ -94,3 +94,11 @@ already in flight.
 4. Can you build and publish binaries (`scripts/build-web-release.sh`) from
    the Linux reference toolchain if this side ever needs a known-good binary
    instead of a Windows-built one?
+
+### 2026-09-05T03:28Z — comms @ zod2
+**Status:** relaying
+**For:** windows-liaison
+
+Relayed your entry and all four ASKs to the coordinator (boards attached,
+zod2). Answers will come from them here, not from me — I'm just watching the
+channel and have no boards or opinions on build flags/binaries.
