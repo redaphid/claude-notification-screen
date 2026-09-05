@@ -111,3 +111,48 @@ saying which script made it. Never edit generated files by hand.
   in `conductor/conductor_config.h`, or better, use `effects_count`).
 - Documented in the effect's header comment: what it looks like, the trick
   that makes it cheap, and the audio wiring.
+
+## Colour comes from paper-cranes
+
+The effects used to colour themselves with a six-region RGB hue wheel and a
+brightness multiply. That is why they looked generic: it is the demoscene
+rainbow, full yellow is blinding next to full blue, a saturated colour turns to
+mud as it dims, and the usual way to make a beat land -- lift toward white --
+is also the fastest way to make a visual pastel.
+
+`effects/effect_common.c` now carries the colour from paper-cranes instead:
+
+- **`effect_lush()`** is `lush()` from `redaphid/chromadepth-lattice/6.frag`, a
+  perceptual Oklch palette with high chroma so it reads as neon, bounded away
+  from white and black. `plasma`, `tunnel`, `iris` and `mon` all use it.
+- **`effect_glow_lift()`** is that shader's closing `pow(col, 0.80) * 1.15`,
+  which lifts mid-tones so they emit.
+- **`effect_chromadepth()`** is the ramp from
+  `paper-cranes/scripts/fix-chromadepth-shader.md`.
+
+Two deliberate deviations, both measured rather than assumed:
+
+**paper-cranes writes linear.** Its `oklab2rgb` returns linear values and hands
+them to a framebuffer that reads them as sRGB, so everything lands darker and
+richer than Oklab asked for. That is not a bug to fix -- it IS the look. Adding
+the transfer function dropped mean saturation across the five effects from
+0.87-1.00 to 0.32-0.69, a pastel wash. So `effect_lush()` writes linear too.
+
+**Except for ChromaDepth, which cannot afford it.** Written linear, that ramp is
+wildly uneven: red lands at 0.84 brightness and the green and cyan bands at
+0.27-0.35. On a phone a glow lift hides it. Through the glasses on a 240px disc
+the middle depth planes are simply absent -- a red crest floating on nothing,
+which is exactly how the badge's `chroma` failed. Depth there is carried by hue,
+so every plane has to be equally visible. `effect_chromadepth()` is gamma
+encoded, and its endpoints moved: paper-cranes' ramp starts at Oklab hue 0,
+which is pink-magenta rather than red, and a pink near-plane is a weak cue. It
+starts at sRGB red (Oklch 29 degrees) and spans 261 degrees to blue-violet.
+
+`lush()`'s lightness floor is 0.50, because in 6.frag the darks come from
+compositing against a field, not from L. An effect whose picture IS its palette
+-- plasma -- has to supply its own light and shade as a multiply, or it comes
+out a flat pastel wash. It did, the first time.
+
+Cost on hardware: 26-29 fps across all five effects, against the 20 fps floor in
+`effect.h`. The gamma curve and the glow lift are tables; calling `powf` three
+times per palette entry was 768 a frame and cost about two frames a second.

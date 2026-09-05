@@ -183,14 +183,24 @@ static void iris_render(uint16_t *out, const EffectInput *in) {
   }
 
   // ---- palette ------------------------------------------------------------
-  const int gain = effect_clamp_u8((int)(150.0f + 105.0f * (0.35f + 0.40f * energy + 0.45f * env)));
+  // Oklch, from paper-cranes' lush(). The rings keep their brightness ramp and
+  // gain a hue that travels with it, so the iris reads as coloured depth
+  // rather than as one hue getting darker.
+  const float gain = effect_clamp01((150.0f + 105.0f * (0.35f + 0.40f * energy + 0.45f * env)) / 255.0f);
+  const float hueBase = (float)s_hue / 255.0f + knob(3);
   for (int i = 0; i < 256; ++i) {
-    const uint8_t p = (uint8_t)((i >> 2) + s_hue + (uint8_t)(knob(3) * 255.0f));
-    int r = (effect_sinu(p) * i) >> 8;
-    int g = (effect_sinu((uint8_t)(p + 96)) * i) >> 8;
-    int b = (effect_sinu((uint8_t)(p + 176)) * i) >> 8;
-    s_pal[i] = effect_rgb565((uint8_t)((r * gain) >> 8), (uint8_t)((g * gain) >> 8),
-                             (uint8_t)((b * gain) >> 8));
+    const float u = (float)i / 256.0f;
+    int r, g, b;
+    effect_lush(hueBase + u * 0.26f, u * gain, &r, &g, &b);
+    if (u < 0.22f) {  // the pupil goes to true black
+      const float k = u / 0.22f;
+      r = (int)(r * k);
+      g = (int)(g * k);
+      b = (int)(b * k);
+    }
+    effect_glow_lift(&r, &g, &b);
+    s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8(r), (uint8_t)effect_clamp_u8(g),
+                             (uint8_t)effect_clamp_u8(b));
   }
   for (int i = 256; i < 512; ++i) {  // sparkle bloom half
     const int k = i - 256;

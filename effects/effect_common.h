@@ -81,6 +81,53 @@ static inline uint32_t effect_dt_ms(uint32_t *last, uint32_t now) {
   return dt;
 }
 
+// ---------------------------------------------------------------------------
+// Colour, cribbed from paper-cranes rather than reinvented.
+//
+// The hue wheel these effects used before was a six-region RGB ramp: cheap,
+// and perceptually wrong in the way that makes a visual look generic. Full
+// yellow is blinding next to full blue, "brightness" means multiplying RGB so
+// saturated colours go muddy as they dim, and lifting toward white washes
+// everything pastel. paper-cranes solved this years ago with Oklab, and its
+// shaders are the reference for what these badges are supposed to look like.
+//
+// Palettes are built once per frame (<=256 entries), never per pixel, so the
+// float and trig cost here is inside the budget effect.h sets.
+// ---------------------------------------------------------------------------
+
+// Oklab -> RGB, the exact matrix from paper-cranes' shader-wrapper.js. Like
+// that one it returns LINEAR values with no gamma encode: paper-cranes writes
+// them straight to the framebuffer, so matching its look means matching that
+// too, not "correcting" it.
+void effect_oklab_rgb(float L, float a, float b, int *r, int *g, int *bl);
+
+// The `lush()` palette from redaphid/chromadepth-lattice/6.frag: a perceptual
+// Oklch journey, high chroma so it reads as neon rather than pastel, bounded
+// away from both white and black.
+//   s   hue position; wraps, so it can be accumulated forever
+//   lit 0..1 lightness
+void effect_lush(float s, float lit, int *r, int *g, int *b);
+
+// The ChromaDepth ramp from paper-cranes' scripts/fix-chromadepth-shader.md,
+// which exists because getting this wrong is the normal outcome. Through the
+// glasses red reads nearest and violet farthest, so t is depth: 0 near, 1 far.
+// It MUST be Oklab -- an HSL or RGB hue wheel is the documented failure mode,
+// and it is what the badge's chroma effect was doing.
+void effect_chromadepth(float t, int *r, int *g, int *b);
+
+// paper-cranes' GLOW LIFT: gamma up then gain, so mid-tones emit instead of
+// sitting in the mud. High chroma is what keeps this neon rather than washed
+// out, which is why it belongs with the palettes above and not on its own.
+void effect_glow_lift(int *r, int *g, int *b);
+
+// Per-device palette identity, paper-cranes' `seed2`. Its shaders seed the
+// palette from a per-device random persisted in localStorage so every screen
+// gets its own one-of-a-kind look; a badge has something better than random --
+// its MAC. 0..1, default 0.5. Affects chroma (saturation) in effect_lush().
+void effect_set_seed(float seed01);
+
+#define EFFECT_TAU 6.28318530718f
+
 // 0..255 sine, for palette and shape ramps.
 static inline int effect_sinu(uint8_t phase) {
   return 128 + effect_sin8[phase];

@@ -16,6 +16,7 @@
 #include "chorus_command.h"
 #include "chorus_packet.h"
 #include "display.h"
+#include "effect_common.h"
 #include "effects.h"
 #include "knobs.h"
 #include "phone_link.h"
@@ -351,6 +352,11 @@ static void monSelectForThisBadge() {
   if (stored >= 0 && stored < mon_variant_count()) variant = stored;
   mon_select(variant);
   myCrest = variant;
+  // paper-cranes seeds each device's palette from a random it keeps in
+  // localStorage, so no two screens look quite alike. A badge has something
+  // better than a random: the MAC it already answers to. Same idea, and the
+  // badge you were handed stays the badge you were handed.
+  effect_set_seed((float)((tail * 2654435761u) >> 24) / 255.0f);
   Serial.printf("[badge] crest: %s (mon variant %d)\n", mon_variant_name(variant), variant);
 }
 

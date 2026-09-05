@@ -21,6 +21,8 @@
 //              palette washes toward white, then decays. This is the part that
 //              reads as "on the beat" -- driving hue off raw bass instead
 //              makes the field shudder, which is exactly what we are avoiding.
+#include <math.h>
+
 #include "effect_common.h"
 #include "knobs.h"
 
@@ -117,20 +119,49 @@ static void plasma_render(uint16_t *out, const EffectInput *in) {
   for (int r = 0; r < 256; ++r)
     s_radl[r] = (int16_t)((effect_sin8[(uint8_t)(((r * fr) >> 8) + phr)] * ar) / 127);
 
-  // ---- palette: integer cosine ramp, no sinf, ~1500 cycles ---------------
-  const int gain = effect_clamp_u8(
-      (int)((110.0f + 145.0f * (0.30f + (0.45f * energy + 0.45f * env) * react)) * glowk));
-  // Squared, so this is a punch rather than a glow -- and capped short of a
-  // full whiteout so the field structure stays readable through the flash.
-  const int wash = (int)(82.0f * env * env * react);
+  // ---- palette ------------------------------------------------------------
+  // This was three phase-shifted sine channels multiplied by a brightness
+  // factor: the classic demoscene rainbow, and the reason this effect looked
+  // like anybody's plasma. It is paper-cranes' Oklch `lush()` now, so the hue
+  // journey is perceptual and dimming does not drag the colour into mud.
+  //
+  // The beat used to add white ("wash", squared, so a punch). White is the
+  // fastest way to make a visual pastel, and 6.frag's own note on its bloom is
+  // "gentle so loud stays saturated, not pastel". A hit now pushes a brighter,
+  // hue-shifted sample of the same palette instead of bleaching toward white.
+  const float litBase = 0.55f + 0.35f * effect_clamp01((0.25f + (0.45f * energy + 0.45f * env) * react) * glowk);
+  const float hueBase = (float)s_hue / 255.0f + knob(3);
+  const float accent = effect_clamp01(0.9f * env * env * react);
+  // lush()'s lightness floor is 0.50 -- in 6.frag the darks come from compositing
+  // against a field and from coverage, not from L, because that shader has
+  // structure of its own. Plasma has none: the palette index IS the picture, so
+  // if the palette never goes dark neither does the effect, and the first
+  // attempt at this came out a flat pastel wash. So the ramp carries its own
+  // light and shade, applied as a multiply -- which in linear space dims
+  // without dragging the hue toward grey the way lowering L would.
   for (int i = 0; i < 256; ++i) {
-    const uint8_t p = (uint8_t)(i + s_hue + (uint8_t)(knob(3) * 255.0f));
-    int r = (effect_sinu(p) * gain) >> 8;
-    int g = (effect_sinu((uint8_t)(p + 85)) * gain) >> 8;
-    int b = (effect_sinu((uint8_t)(p + 170)) * gain) >> 8;
-    s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8(r + wash),
-                             (uint8_t)effect_clamp_u8(g + wash),
-                             (uint8_t)effect_clamp_u8(b + wash));
+    const float u = (float)i / 256.0f;
+    const float ripple = 0.5f + 0.5f * sinf(u * EFFECT_TAU);  // 0 dark .. 1 lit
+    // Most of a turn across the field, so neighbouring bands are clearly
+    // different colours rather than neighbouring shades of one.
+    const float sp = hueBase + u * 0.90f;
+    const float lit = 0.30f + 0.55f * ripple;
+    const float shade = (0.14f + 0.86f * ripple) * litBase;
+    int r, g, b;
+    effect_lush(sp, lit, &r, &g, &b);
+    r = (int)(r * shade);
+    g = (int)(g * shade);
+    b = (int)(b * shade);
+    if (accent > 0.0f) {
+      int ar, ag, ab;
+      effect_lush(sp + 0.18f, 1.0f, &ar, &ag, &ab);
+      r += (int)(ar * accent * 0.7f);
+      g += (int)(ag * accent * 0.7f);
+      b += (int)(ab * accent * 0.7f);
+    }
+    effect_glow_lift(&r, &g, &b);
+    s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8(r), (uint8_t)effect_clamp_u8(g),
+                             (uint8_t)effect_clamp_u8(b));
   }
 
   // ---- pixels -------------------------------------------------------------

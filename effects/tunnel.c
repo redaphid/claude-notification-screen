@@ -156,21 +156,40 @@ static void tunnel_render(uint16_t *out, const EffectInput *in) {
   }
 
   // ---- palette ------------------------------------------------------------
+  // paper-cranes' Oklch `lush()` instead of three offset sines. The hue also
+  // travels a little with depth, which is 6.frag's "depth-coherent" idea in
+  // its simplest form: the far end of the tunnel is not merely a darker
+  // version of the mouth, it is a different colour.
+  const float hueBase = (float)s_hue / 255.0f + knob(3);
   for (int i = 0; i < 256; ++i) {
-    const uint8_t p = (uint8_t)((i >> 1) + s_hue + (uint8_t)(knob(3) * 255.0f));
-    const int shade = i;  // 0..255 already carries the brightness ramp
-    int r = (effect_sinu(p) * shade) >> 8;
-    int g = (effect_sinu((uint8_t)(p + 70)) * shade) >> 8;
-    int b = (effect_sinu((uint8_t)(p + 150)) * shade) >> 8;
+    const float u = (float)i / 256.0f;  // already the brightness ramp
+    int r, g, b;
+    effect_lush(hueBase + u * 0.38f, u * bright, &r, &g, &b);
+    // The throat is the vanishing point and has to reach true black, so the
+    // palette is faded rather than left at lush()'s lightness floor.
+    if (u < 0.30f) {
+      const float k = u / 0.30f;
+      r = (int)(r * k);
+      g = (int)(g * k);
+      b = (int)(b * k);
+    }
+    effect_glow_lift(&r, &g, &b);
     s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8(r), (uint8_t)effect_clamp_u8(g),
                              (uint8_t)effect_clamp_u8(b));
   }
-  for (int i = 256; i < 512; ++i) {  // bloom half: ring highlights ramp to white
-    const int k = i - 256;
-    uint8_t r, g, b;
-    effect_unpack565(s_pal[255], &r, &g, &b);
-    s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8(r + k), (uint8_t)effect_clamp_u8(g + k),
-                             (uint8_t)effect_clamp_u8(b + k));
+  // Bloom half: ring highlights used to ramp toward white, which is both the
+  // pastel failure and, for anyone in ChromaDepth glasses, a smear.
+  for (int i = 256; i < 512; ++i) {
+    const float k = (float)(i - 256) / 255.0f;
+    int r, g, b;
+    effect_lush(hueBase + 0.38f + 0.18f, 1.0f, &r, &g, &b);
+    uint8_t br, bgc, bb;
+    effect_unpack565(s_pal[255], &br, &bgc, &bb);
+    r = br + (int)(r * k * 0.85f);
+    g = bgc + (int)(g * k * 0.85f);
+    b = bb + (int)(b * k * 0.85f);
+    s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8(r), (uint8_t)effect_clamp_u8(g),
+                             (uint8_t)effect_clamp_u8(b));
   }
 
   // ---- pixels -------------------------------------------------------------

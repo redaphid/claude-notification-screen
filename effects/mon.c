@@ -61,98 +61,133 @@ const char *mon_variant_name(int variant) {
   return (variant >= 0 && variant < MON_COUNT) ? mon_names[variant] : "auto";
 }
 
-// Hue wheel at full saturation, then softened `soften` percent toward white
-// (the coloured palette uses 15 so primaries do not clip into a flat slab; the
-// ChromaDepth palette uses 0 because the glasses need pure wavelengths).
-static void hue_rgb(uint8_t h, int soften, int *r, int *g, int *b) {
-  const int region = h / 43;
-  int rem = (h - region * 43) * 6;
-  if (rem > 255) rem = 255;
-  const int q = 255 - rem, t = rem;
-  switch (region) {
-    case 0: *r = 255; *g = t;   *b = 0;   break;
-    case 1: *r = q;   *g = 255; *b = 0;   break;
-    case 2: *r = 0;   *g = 255; *b = t;   break;
-    case 3: *r = 0;   *g = q;   *b = 255; break;
-    case 4: *r = t;   *g = 0;   *b = 255; break;
-    default: *r = 255; *g = 0;  *b = q;   break;
-  }
-  *r += (255 - *r) * soften / 100;
-  *g += (255 - *g) * soften / 100;
-  *b += (255 - *b) * soften / 100;
-}
-
+// The crest in colour. paper-cranes' `lush()` from chromadepth-lattice/6.frag:
+// a perceptual Oklch palette, high chroma so it reads as neon, bounded away
+// from white and black.
+//
+// Two things changed with it, both taken from that shader rather than invented:
+//
+// The old palette multiplied one RGB hue by a brightness factor, which is how a
+// saturated colour turns to mud as it dims -- in Oklch lightness moves without
+// dragging chroma down with it, so a dim crest is still coloured.
+//
+// And the beat used to add white ("wash"), which is the documented way to make
+// a visual pastel: 6.frag's note on its own bloom is "gentle so loud stays
+// saturated, not pastel". The accent here is a hue-shifted BRIGHTER sample of
+// the same palette -- `lush(s + 0.18, 1.0) * wave * 0.7` in the original -- so
+// a hit changes the colour rather than bleaching it.
+//
+// The background is not black either. 6.frag is explicit about wanting "no
+// black voids" so the whole screen emits light and reads from across a room;
+// the surround here is a dim, hue-shifted member of the same family.
 static void build_palette(uint8_t hue, float energy, float treble, float env) {
-  int br, bg, bb;
-  hue_rgb(hue, 15, &br, &bg, &bb);
-  const float fill = 0.26f + 0.40f * energy;              // deep-inside brightness
-  const float reach = 2.5f + 9.0f * energy + 6.0f * env;  // outer glow e-fold, motif px
-  const float rimw = 1.2f + 2.2f * treble;                // rim band width, motif px
+  const float s0 = (float)hue / 255.0f;                     // the crest's own hue
+  const float fill = 0.30f + 0.42f * energy;                // deep-inside lightness
+  const float reach = 2.5f + 9.0f * energy + 6.0f * env;    // outer glow e-fold, motif px
+  const float rimw = 1.2f + 2.2f * treble;                  // rim band width, motif px
   for (int i = 0; i < 256; ++i) {
-    const float d = (float)(i - 128) / (float)MON_SDF_SCALE;  // motif px, + outside
-    float k, wash;
+    const float d = (float)(i - 128) / (float)MON_SDF_SCALE;
+    float lit, accent;
     if (d < 0.0f) {
-      const float lit = expf(d / 5.0f);                       // 1 at the edge, 0 deep inside
-      k = fill + (0.80f - fill) * lit;
-      wash = 0.55f * env * lit;
+      const float edge = expf(d / 5.0f);                    // 1 at the edge, 0 deep inside
+      lit = fill + (0.92f - fill) * edge;
+      accent = 0.55f * env * edge;
     } else {
       const float glow = expf(-d / reach) * (0.50f + 0.50f * env);
       const float rim = d < rimw ? (1.0f - d / rimw) : 0.0f;
-      k = 0.05f + 0.85f * glow + 0.30f * rim;
-      wash = rim * (0.20f + 0.55f * env);
+      lit = 0.16f + 0.74f * glow + 0.30f * rim;
+      accent = rim * (0.20f + 0.55f * env);
     }
-    const int w = (int)(255.0f * wash);
-    s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8((int)(br * k) + w),
-                             (uint8_t)effect_clamp_u8((int)(bg * k) + w),
-                             (uint8_t)effect_clamp_u8((int)(bb * k) + w));
+    int r, g, b;
+    effect_lush(s0, lit, &r, &g, &b);
+    if (accent > 0.0f) {
+      int ar, ag, ab;
+      effect_lush(s0 + 0.18f, 1.0f, &ar, &ag, &ab);
+      const float k = accent * 0.7f;
+      r += (int)(ar * k);
+      g += (int)(ag * k);
+      b += (int)(ab * k);
+    }
+    effect_glow_lift(&r, &g, &b);
+    s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8(r), (uint8_t)effect_clamp_u8(g),
+                             (uint8_t)effect_clamp_u8(b));
   }
 }
 
 // ChromaDepth palette. Those glasses are a prism: red lands nearest the eye,
 // then orange, yellow, green, cyan, blue, and violet farthest. So colour IS
 // depth, and the distance field becomes a height map: the crest is a raised
-// dome (red in the middle, orange toward its edge), the rim is a yellow-green
-// ridge, and the surround falls away through cyan and blue into a dim violet
-// background. The beat pushes the whole map toward red, so the crest jumps at
-// the viewer on the downbeat and settles back. No white anywhere: white is
-// every wavelength at once and the glasses smear it.
+// dome, the rim a ridge, and the surround falls away into violet and finally
+// into true black at the edge of the disc.
+//
+// This used to run a six-region RGB hue wheel and it never worked through the
+// glasses. paper-cranes has a whole document about why -- scripts/
+// fix-chromadepth-shader.md -- and the first thing it says is that the ramp
+// MUST be Oklab, that an HSL or RGB wheel is the failure mode, and that chroma
+// has to stay at or above 0.18 or the depth cue collapses into grey. That is
+// exactly what was happening here.
+//
+// The other three things that document asks for, which the old ramp also got
+// wrong:
+//   - STRONG contrast between near and far, in DISTINCT bands rather than one
+//     smooth gradient. A continuous ramp blurs the depth cue; the eye needs
+//     edges to separate the layers onto different planes.
+//   - Black that is truly (0,0,0), not dark grey. Grey has a wavelength and
+//     the glasses will happily place it somewhere.
+//   - No white anywhere: white is every wavelength at once and it smears.
 static int s_chroma = 0;
 
+// Depth bands. Quantising t before the ramp is what turns a gradient into
+// layers; the small residual slope inside each band keeps the shape readable
+// without letting the band drift into its neighbour.
+#define CHROMA_BANDS 7
+
 static void build_palette_chroma(float energy, float treble, float env) {
-  // knob 5 sets how much of the wheel the height map spans -- a shallow ramp
-  // keeps the crest and its surround close together in depth, a deep one
-  // throws the background right back. knob 4 rotates where the ramp starts,
-  // which through the glasses reads as moving the whole scene toward or away.
   const float depth = 0.4f + 1.6f * knob(4);
   const float hue0 = knob(3) * 0.35f;
   const float reach = (6.0f + 10.0f * energy + 4.0f * env) * depth;  // px the surround recedes
   const float rimw = 1.0f + 2.0f * treble;
-  const float push = 0.22f * env;                          // nearer on the beat
+  const float push = 0.22f * env;  // the whole map comes nearer on the beat
   for (int i = 0; i < 256; ++i) {
     const float d = (float)(i - 128) / (float)MON_SDF_SCALE;
-    float z, v;  // z: 0 nearest .. 1 farthest; v: brightness
+    float t;      // 0 nearest .. 1 farthest
+    float fade;   // 1 lit .. 0 gone to black, only used far out
     if (d < 0.0f) {
-      const float t = 1.0f - expf(d / 8.0f);  // 0 at the edge, 1 deep inside
-      z = 0.30f - 0.30f * t;                  // orange at the edge, red in the middle
-      v = 0.78f + 0.22f * t;
+      // Inside the crest: a shallow dome, held near the red end.
+      const float k = 1.0f - expf(d / 8.0f);  // 0 at the edge, 1 deep inside
+      t = 0.26f - 0.26f * k;
+      fade = 1.0f;
     } else if (d < rimw) {
-      z = 0.38f;                              // yellow-green ridge
-      v = 1.0f;
+      t = 0.34f;  // the ridge, a single flat plane so it reads as an edge
+      fade = 1.0f;
     } else {
-      float t = (d - rimw) / reach;
-      if (t > 1.0f) t = 1.0f;
-      z = 0.45f + 0.55f * t;                  // green .. violet
-      v = 0.85f * expf(-(d - rimw) / (reach * 0.9f)) + 0.07f;
+      float k = (d - rimw) / reach;
+      if (k > 1.0f) k = 1.0f;
+      t = 0.42f + 0.58f * k;
+      // The surround is the FAR plane, so it stays lit and violet -- it is a
+      // depth cue, not empty space. An earlier version faded it exponentially
+      // to black and destroyed the green through blue bands with it, leaving a
+      // red crest on almost nothing: the ramp was correct and invisible.
+      // Only the last of it goes dark, and only once the depth ramp has been
+      // fully travelled.
+      fade = k > 0.86f ? (1.0f - (k - 0.86f) / 0.14f) : 1.0f;
+      if (fade < 0.0f) fade = 0.0f;
     }
-    z -= push;
-    if (z < 0.0f) z = 0.0f;
+    t = t + hue0 - push;
+    t = effect_clamp01(t);
+    // Quantise into planes. Without this the ramp is continuous and the eye
+    // gets one soft blur instead of a stack of surfaces.
+    const float band = floorf(t * (float)CHROMA_BANDS) / (float)(CHROMA_BANDS - 1);
+    const float within = t * (float)CHROMA_BANDS - floorf(t * (float)CHROMA_BANDS);
+    const float tq = effect_clamp01(band + (within - 0.5f) * 0.10f);
     int r, g, b;
-    float zh = hue0 + z;
-    if (zh > 1.0f) zh = 1.0f;
-    hue_rgb((uint8_t)(zh * 192.0f), 0, &r, &g, &b);  // 0 red .. 192 violet on the wheel
-    s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8((int)(r * v)),
-                             (uint8_t)effect_clamp_u8((int)(g * v)),
-                             (uint8_t)effect_clamp_u8((int)(b * v)));
+    effect_chromadepth(tq, &r, &g, &b);
+    if (fade < 1.0f) {
+      r = (int)(r * fade);
+      g = (int)(g * fade);
+      b = (int)(b * fade);
+    }
+    s_pal[i] = effect_rgb565((uint8_t)r, (uint8_t)g, (uint8_t)b);
   }
 }
 
