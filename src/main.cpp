@@ -50,6 +50,8 @@ static bool phoneLinkUp = false;
 // documented rather than solved. See docs/adr-002.
 enum ConductorSource : uint8_t { SRC_NONE = 0, SRC_PHONE = 1, SRC_ESPNOW = 2 };
 static ConductorSource activeSource = SRC_NONE;
+// Set when the phone reports an onset, consumed by the next rendered frame.
+static bool phoneOnset = false;
 
 // Counts boots that never reached steady rendering, so a badge can notice it is
 // caught in a boot loop: if the radio brings the rail down three times running
@@ -174,6 +176,87 @@ static bool heardRecently(uint32_t now) {
   const uint32_t last = rxLastMs;
   portEXIT_CRITICAL(&featureMux);
   return seen && (now - last) <= PHONE_LINK_YIELD_MS;
+}
+
+// When a badge is the conductor (BOOT held at reset), its serial console picks
+// what the swarm shows, the same way the leader's does:
+//   shader <n> | s <n> | <n> | plasma | tunnel | iris | mon | next | prev | ?
+static uint8_t conductorShader = 0;
+
+static void setConductorShader(int index) {
+  if (effects_count <= 0) return;
+  index = ((index % effects_count) + effects_count) % effects_count;
+  conductorShader = (uint8_t)index;
+  Serial.printf("[badge] shader -> %u (%s)\n", (unsigned)conductorShader, effects_all[conductorShader]->name);
+}
+
+static void handleSerialLine(String line) {
+  line.trim();
+  line.toLowerCase();
+  if (line.isEmpty()) return;
+  if (!isConductor) {
+    Serial.println("[badge] receiver: the conductor picks the shader (hold BOOT at reset to lead)");
+    return;
+  }
+  if (line == "?" || line == "help") {
+    Serial.printf("[badge] shader %u of %d:", (unsigned)conductorShader, effects_count);
+    for (int i = 0; i < effects_count; i++) Serial.printf(" %d=%s", i, effects_all[i]->name);
+    Serial.println();
+    return;
+  }
+  if (line == "next" || line == "n") { setConductorShader(conductorShader + 1); return; }
+  if (line == "prev" || line == "p") { setConductorShader(conductorShader - 1); return; }
+  String arg = line;
+  if (line.startsWith("shader")) arg = line.substring(6);
+  else if (line.startsWith("s ")) arg = line.substring(2);
+  arg.trim();
+  for (int i = 0; i < effects_count; i++) {
+    if (arg == effects_all[i]->name) { setConductorShader(i); return; }
+  }
+  if (!arg.isEmpty() && isDigit(arg[0])) { setConductorShader(arg.toInt()); return; }
+  Serial.printf("[badge] unknown command '%s' (try ?)\n", line.c_str());
+}
+
+static void pollSerial() {
+  static String pending;
+  while (Serial.available()) {
+    const char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (!pending.isEmpty()) handleSerialLine(pending);
+      pending = "";
+    } else if (pending.length() < 64) {
+      pending += c;
+    }
+  }
+}
+
+// Which family crest this badge wears in the "mon" effect. Keyed on the last
+// three MAC bytes so the mapping survives reflashes and the same badge is
+// always the same bead; a badge not in the table hashes into the set, which
+// still gives a stable answer per badge.
+static void monSelectForThisBadge() {
+  struct KnownBadge { uint32_t macTail; const char *crest; };
+  static const KnownBadge known[] = {
+      {0x6F29D0, "kiku"},     // COM4 on the Windows bench
+      {0x6F2AC8, "tomoe"},    // COM5
+      {0x6EFD7C, "kikyo"},    // COM6
+      {0x6F2ACC, "ume"},      // COM7
+      {0x85DCF8, "hakkaku"},  // COM8
+      {0x85DC30, "mokko"},    // the Linux bench's badge
+  };
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  const uint32_t tail = ((uint32_t)mac[3] << 16) | ((uint32_t)mac[4] << 8) | mac[5];
+  int variant = -1;
+  for (const KnownBadge &k : known) {
+    if (k.macTail != tail) continue;
+    for (int i = 0; i < mon_variant_count(); i++) {
+      if (strcmp(mon_variant_name(i), k.crest) == 0) variant = i;
+    }
+  }
+  if (variant < 0) variant = (int)((tail * 2654435761u) >> 8) % mon_variant_count();
+  mon_select(variant);
+  Serial.printf("[badge] crest: %s (mon variant %d)\n", mon_variant_name(variant), variant);
 }
 
 // --- ESP-NOW -------------------------------------------------------------
@@ -417,6 +500,14 @@ void setup() {
   selfTest();
   canvas.fillSprite(0);  // effects only write inside the circle; clear the rest
   effectsInit();
+  monSelectForThisBadge();
+#ifdef BADGE_LOCK_EFFECT
+  // Bag builds: every badge wears its own crest no matter what the conductor's
+  // shader byte says. The features still come from the conductor.
+  activeShader = (uint8_t)BADGE_LOCK_EFFECT;
+  Serial.printf("[badge] effect locked to %d (%s)\n", (int)activeShader,
+                effects_by_index(activeShader)->name);
+#endif
 
 #ifdef BADGE_PHONE_LINK
   // BLE shares the radio with ESP-NOW, so it comes up last, after the spike of
@@ -431,6 +522,7 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+  pollSerial();
 
   // --- conductor: analyse (for now, pretend to) and broadcast ---
   static uint32_t lastSendMs = 0;
@@ -446,7 +538,7 @@ void loop() {
       memcpy(pkt.magic, CHORUS_MAGIC, 4);
       pkt.seq = seq++;
       pkt.hop = 0;
-      pkt.shader = 0;
+      pkt.shader = conductorShader;
       for (int i = 0; i < FEAT_COUNT; i++) pkt.features[i] = target[i];
       broadcast(pkt);
     }
@@ -455,6 +547,11 @@ void loop() {
     // conductor and puts the phone's analysis on the air for everyone else.
     uint8_t phoneBeat = 0, phoneShader = 0;
     phoneLinkRead(target, &phoneBeat, &phoneShader);
+    // The phone ran a real onset detector -- median+MAD spectral flux with
+    // hysteresis and a refractory period -- and told us the answer. Use it.
+    // Re-deriving beat from an energy jump here would throw away the good
+    // signal and substitute the exact heuristic this design exists to avoid.
+    phoneOnset = phoneBeat != 0;
     activeShader = phoneShader;
     activeSource = SRC_PHONE;
     heard = true;  // drives `presence`; the phone is our conductor
@@ -478,7 +575,9 @@ void loop() {
     portENTER_CRITICAL(&featureMux);
     for (int i = 0; i < FEAT_COUNT; i++) target[i] = rxFeatures[i];
     lastMs = rxLastMs;
+#ifndef BADGE_LOCK_EFFECT
     activeShader = rxShader;  // "everyone switch to 3"
+#endif
     portEXIT_CRITICAL(&featureMux);
 
     // No conductor in earshot: decay toward stillness rather than freezing on
@@ -510,7 +609,15 @@ void loop() {
   in.treble = shown[FEAT_TREBLE];
   in.energy = shown[FEAT_ENERGY];
   in.time_ms = now;
-  in.beat = (shown[FEAT_ENERGY] - prevEnergy) > 0.25f ? 1 : 0;
+  // A conductor on the air can only express an onset by shaping energy, so for
+  // ESP-NOW we still infer it. A phone says so explicitly, and that is strictly
+  // better information -- prefer it whenever it is what is driving us.
+  if (activeSource == SRC_PHONE) {
+    in.beat = phoneOnset ? 1 : 0;
+    phoneOnset = false;  // an onset is one frame, not a level
+  } else {
+    in.beat = (shown[FEAT_ENERGY] - prevEnergy) > 0.25f ? 1 : 0;
+  }
   in.beat_env = shown[FEAT_ENERGY];
   prevEnergy = shown[FEAT_ENERGY];
 
@@ -546,14 +653,15 @@ void loop() {
     // Report what is actually driving this badge, not just how it booted: a
     // badge conducting from a phone is neither a CONDUCTOR nor a RECEIVER, and
     // labelling it wrong is how a log lies to whoever reads it next.
-    const char *sourceName = isConductor              ? "CONDUCTOR"
+    const char *sourceName = isConductor                    ? "CONDUCTOR"
                              : (activeSource == SRC_PHONE)  ? "PHONE-LED"
                              : (activeSource == SRC_ESPNOW) ? "RECEIVER"
                                                             : "IDLE";
-    Serial.printf("[badge] %s %lu fps | bass %.2f mid %.2f treble %.2f energy %.2f | rx %lu relay %lu\n",
+    Serial.printf("[badge] %s %lu fps | bass %.2f mid %.2f treble %.2f energy %.2f | rx %lu relay %lu | fx %s\n",
                   sourceName, (unsigned long)fps,
                   shown[FEAT_BASS], shown[FEAT_MID], shown[FEAT_TREBLE],
-                  shown[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount);
+                  shown[FEAT_ENERGY], (unsigned long)rxCount, (unsigned long)relayCount,
+                  effects_by_index(activeShader)->name);
     if (txOk || txFail) {
       Serial.printf("[badge] tx ok %lu fail %lu | resyncs %lu | boot attempts %lu\n",
                     (unsigned long)txOk, (unsigned long)txFail,
@@ -586,8 +694,15 @@ void loop() {
       const uint8_t role = (activeSource == SRC_PHONE)    ? PHONE_ROLE_PHONE_LED
                            : (activeSource == SRC_ESPNOW) ? PHONE_ROLE_RECEIVER
                                                           : PHONE_ROLE_IDLE;
-      phoneLinkPublishStatus(role, activeSource == SRC_ESPNOW, (uint16_t)rxCount,
-                             (uint16_t)txOk);
+      // Rates, as the contract says -- not totals. Cumulative counters cast to
+      // uint16 wrap every ~35 minutes at 31 pkt/s, and a phone showing a
+      // rewinding "rate" is worse than showing nothing.
+      static uint32_t prevRx = 0, prevTx = 0;
+      const uint16_t rxRate = (uint16_t)(rxCount - prevRx);
+      const uint16_t txRate = (uint16_t)(txOk - prevTx);
+      prevRx = rxCount;
+      prevTx = txOk;
+      phoneLinkPublishStatus(role, activeSource == SRC_ESPNOW, rxRate, txRate);
     }
     frames = 0;
     lastReportMs = now;

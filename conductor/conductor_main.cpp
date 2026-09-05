@@ -42,6 +42,9 @@
 
 #include "conductor_config.h"
 #include "conductor_display.h"
+// Relative on purpose: -I${PROJECT_DIR}/effects in platformio.ini comes out
+// mangled on Windows builds, and the display file already includes this way.
+#include "../effects/effects.h"
 #include "dsp.h"
 #include "mic_source.h"
 #include "net_espnow.h"
@@ -68,6 +71,69 @@ static uint32_t analysisUsSum = 0;
 static uint32_t analysisUsMax = 0;
 static bool displayOk = false;
 static uint32_t displayFps = 0;
+
+// Auto-cycle period, adjustable at runtime; 0 holds the current shader.
+static uint32_t shaderCycleMs = CONDUCTOR_SHADER_CYCLE_MS;
+
+// The leader is the one place a human can choose what the whole swarm shows:
+// its shader byte goes out in every packet and every badge follows it. So the
+// leader takes commands on its serial console, one per line:
+//   shader <n> | s <n> | <n>   pick an effect by index
+//   plasma | tunnel | iris | mon ...   pick by name (any name in effects_all[])
+//   next | n  |  prev | p      step through the list
+//   cycle <ms>                 auto-advance every <ms> (0 = hold)
+//   ? | help                   list effects and the current one
+static void setShader(int index) {
+  if (effects_count <= 0) return;
+  index = ((index % effects_count) + effects_count) % effects_count;
+  currentShader = (uint8_t)index;
+  lastShaderMs = millis();
+  conductorDisplaySetShader(currentShader);
+  Serial.printf("[conductor] shader -> %u (%s)\n", (unsigned)currentShader,
+                effects_all[currentShader]->name);
+}
+
+static void handleSerialLine(String line) {
+  line.trim();
+  line.toLowerCase();
+  if (line.isEmpty()) return;
+  if (line == "?" || line == "help") {
+    Serial.printf("[conductor] shader %u of %d:", (unsigned)currentShader, effects_count);
+    for (int i = 0; i < effects_count; i++) Serial.printf(" %d=%s", i, effects_all[i]->name);
+    Serial.printf("  cycle=%lu ms\n", (unsigned long)shaderCycleMs);
+    return;
+  }
+  if (line == "next" || line == "n") { setShader(currentShader + 1); return; }
+  if (line == "prev" || line == "p") { setShader(currentShader - 1); return; }
+  if (line.startsWith("cycle")) {
+    shaderCycleMs = (uint32_t)line.substring(5).toInt();
+    lastShaderMs = millis();
+    Serial.printf("[conductor] cycle -> %lu ms\n", (unsigned long)shaderCycleMs);
+    return;
+  }
+  String arg = line;
+  if (line.startsWith("shader")) arg = line.substring(6);
+  else if (line.startsWith("s ")) arg = line.substring(2);
+  arg.trim();
+  for (int i = 0; i < effects_count; i++) {
+    if (arg == effects_all[i]->name) { setShader(i); return; }
+  }
+  if (!arg.isEmpty() && isDigit(arg[0])) { setShader(arg.toInt()); return; }
+  Serial.printf("[conductor] unknown command '%s' (try ?)\n", line.c_str());
+}
+
+static void pollSerial() {
+  static String pending;
+  while (Serial.available()) {
+    const char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (!pending.isEmpty()) handleSerialLine(pending);
+      pending = "";
+    } else if (pending.length() < 64) {
+      pending += c;
+    }
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -116,6 +182,8 @@ void setup() {
 }
 
 void loop() {
+  pollSerial();  // works with or without a microphone
+
   if (!micOk) {
     // Fail loud and slow rather than spinning silently at full tilt.
     static uint32_t lastWhine = 0;
@@ -136,13 +204,7 @@ void loop() {
   if (dtUs > analysisUsMax) analysisUsMax = dtUs;
   framesSinceReport++;
 
-#if CONDUCTOR_SHADER_CYCLE_MS > 0
-  if (millis() - lastShaderMs >= (uint32_t)CONDUCTOR_SHADER_CYCLE_MS) {
-    lastShaderMs = millis();
-    currentShader = (uint8_t)((currentShader + 1) % CONDUCTOR_SHADER_COUNT);
-    Serial.printf("[conductor] shader -> %u\n", (unsigned)currentShader);
-  }
-#endif
+  if (shaderCycleMs > 0 && millis() - lastShaderMs >= shaderCycleMs) setShader(currentShader + 1);
 
   // Cadence is 30 Hz, but an onset does not wait its turn: the whole point of
   // detecting the event is that the response goes out on the beat, not up to

@@ -193,6 +193,12 @@ bool conductorDisplayInit() {
   return true;
 }
 
+// The leader's own panel follows the same shader byte it broadcasts, so what
+// the person at the leader sees is what the swarm sees. A byte write is atomic
+// across the two cores; no lock needed.
+static volatile uint8_t s_shader = 0;
+void conductorDisplaySetShader(uint8_t shader) { s_shader = shader; }
+
 namespace {
 
 void renderFrame(const FrameSnapshot &snap) {
@@ -210,7 +216,7 @@ void renderFrame(const FrameSnapshot &snap) {
   in.beat = beat;
   in.beat_env = snap.beatEnv;
 
-  effects_by_index(0)->render((uint16_t *)canvas.getBuffer(), &in);
+  effects_by_index(s_shader)->render((uint16_t *)canvas.getBuffer(), &in);
 
   // The conductor's screen is a monitor, not just a visual: it shows what this
   // board is hearing, so a silent mic or a wedged radio is visible from across

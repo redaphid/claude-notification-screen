@@ -13,6 +13,13 @@ extern "C" {
 extern const Effect effect_plasma;
 extern const Effect effect_tunnel;
 extern const Effect effect_iris;
+extern const Effect effect_mon;
+
+// mon extras (not part of the frozen effect.h contract). A badge picks which
+// crest it wears; unselected, mon cycles through all of them.
+void mon_select(int variant);
+int mon_variant_count(void);
+const char *mon_variant_name(int variant);
 
 // Ordered; index == ChorusPacket.shader. Append only -- reordering changes
 // what every badge in the swarm shows.

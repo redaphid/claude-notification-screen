@@ -44,6 +44,11 @@ class FeatureSink : public NimBLECharacteristicCallbacks {
 class LinkState : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *) override {
     phoneConnected = true;
+    // The contract calls this "since connect", so make it true: a phone
+    // reconnecting needs to see its own frames counted, not the last phone's.
+    portENTER_CRITICAL(&phoneMux);
+    framesAccepted = 0;
+    portEXIT_CRITICAL(&phoneMux);
     Serial.println("[phone] connected");
   }
   void onDisconnect(NimBLEServer *s) override {

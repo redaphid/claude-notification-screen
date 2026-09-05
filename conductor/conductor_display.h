@@ -44,5 +44,9 @@ bool conductorDisplayInit();
 uint32_t conductorDisplayLastDrawUs();
 uint32_t conductorDisplayFps();
 
+// Which effect the leader's own panel renders: the same shader byte it
+// broadcasts, so the person at the leader sees what the swarm sees.
+void conductorDisplaySetShader(uint8_t shader);
+
 void conductorDisplayDraw(const float features[4], uint8_t beat, float beatEnv,
                           uint32_t txCount, uint32_t analysisFps);

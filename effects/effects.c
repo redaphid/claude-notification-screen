@@ -4,6 +4,7 @@ const Effect *const effects_all[] = {
     &effect_plasma,
     &effect_tunnel,
     &effect_iris,
+    &effect_mon,
 };
 
 const int effects_count = (int)(sizeof(effects_all) / sizeof(effects_all[0]));
