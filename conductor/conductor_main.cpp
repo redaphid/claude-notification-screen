@@ -49,6 +49,7 @@
 #include "../effects/effects.h"
 #include "dsp.h"
 #include "mic_source.h"
+#include "leader_link.h"
 #include "net_espnow.h"
 
 static MicSource mic;
@@ -72,6 +73,7 @@ static uint32_t lastRadioTryMs = 0;
 static uint32_t analysisUsSum = 0;
 static uint32_t analysisUsMax = 0;
 static bool displayOk = false;
+static bool bleUp = false;
 static uint32_t displayFps = 0;
 
 // Auto-cycle period, adjustable at runtime; 0 holds the current shader.
@@ -214,6 +216,34 @@ static bool handleSwarmCommand(const String &line) {
   return false;
 }
 
+// A control frame from the phone. Deliberately routed through setShader() and
+// radio.command() -- the same two calls the serial console makes -- so that the
+// two consoles can never mean different things by the same word.
+static void applyLeaderControl(const LeaderControlFrame &f) {
+  switch (f.op) {
+    case LEADER_OP_SET_EFFECT:
+      if (f.arg0 < (uint8_t)effects_count) setShader(f.arg0);
+      break;
+    case LEADER_OP_NEXT: setShader(currentShader + 1); break;
+    case LEADER_OP_PREV: setShader(currentShader - 1); break;
+    case LEADER_OP_CYCLE_SECONDS:
+      shaderCycleMs = ((uint32_t)f.arg0 | ((uint32_t)f.arg1 << 8)) * 1000u;
+      lastShaderMs = millis();
+      Serial.printf("[ble] cycle -> %lu ms\n", (unsigned long)shaderCycleMs);
+      break;
+    case LEADER_OP_BADGE_EFFECT: radio.command(CMD_SET_EFFECT, f.target, f.arg0, f.arg1); break;
+    case LEADER_OP_BADGE_RELEASE: radio.command(CMD_RELEASE, f.target); break;
+    case LEADER_OP_BADGE_IDENTIFY: radio.command(CMD_IDENTIFY, f.target, f.arg0 ? f.arg0 : 5); break;
+    case LEADER_OP_BADGE_BRIGHTNESS: radio.command(CMD_BRIGHTNESS, f.target, f.arg0); break;
+    case LEADER_OP_ROLL_CALL: {
+      const uint8_t all[3] = {0, 0, 0};
+      radio.command(CMD_ROLL_CALL, all);
+      break;
+    }
+    default: Serial.printf("[ble] unknown op %u\n", (unsigned)f.op); break;
+  }
+}
+
 static void handleSerialLine(String line) {
   line.trim();
   line.toLowerCase();
@@ -331,10 +361,23 @@ void setup() {
   if (!displayOk) {
     Serial.println("[conductor] no display -- continuing headless, audio still runs");
   }
+
+  // BLE last: it shares the radio with ESP-NOW, and bringing it up before the
+  // swarm is being fed would risk the one job this board has for the sake of a
+  // console nobody may connect to.
+  bleUp = leaderLinkBegin();
 }
 
 void loop() {
   pollSerial();  // works with or without a microphone
+
+  // The phone's console, drained here rather than in the NimBLE task for the
+  // same reason relays are drained in loop() on a badge: esp_now_send() belongs
+  // to whoever owns the main loop.
+  {
+    LeaderControlFrame f;
+    while (leaderLinkTakeCommand(&f)) applyLeaderControl(f);
+  }
 
   if (!micOk) {
     // Fail loud and slow rather than spinning silently at full tilt.
@@ -412,6 +455,21 @@ void loop() {
         f.fluxThreshold, f.onset ? " *" : "  ", f.gate, f.beatEnv, framesSinceReport / dt, avgUs,
         (unsigned long)analysisUsMax, (unsigned long)radio.sent(),
         (unsigned long)ChorusRadio::echoesHeard(), (unsigned)ChorusRadio::lastEchoHop());
+
+    // Tell the phone what the swarm is doing, on the same tick as the serial
+    // line, so the two never disagree about the moment they describe.
+    if (bleUp) {
+      ChorusRadio::rosterExpire(ROSTER_STALE_MS);
+      static uint32_t prevTx = 0;
+      const uint32_t tx = radio.sent();
+      leaderLinkPublish(currentShader, (uint8_t)effects_count,
+                        (uint8_t)ChorusRadio::rosterCount(), f.gate > 0.5f,
+                        (uint16_t)(shaderCycleMs / 1000u), (uint16_t)(tx - prevTx),
+                        (uint16_t)(now / 1000u), (uint8_t)(f.bass * 255.0f),
+                        (uint8_t)(f.energy * 255.0f));
+      prevTx = tx;
+    }
+
     lastReportMs = now;
     framesSinceReport = 0;
     analysisUsSum = 0;

@@ -179,7 +179,12 @@ static uint8_t appliedBrightness = 255;
 // collisions. Each badge waits a slice of a second derived from its own MAC.
 static volatile uint32_t helloDueMs = 0;
 static uint16_t cmdLastSeq = 0;
+static uint32_t cmdLastMs = 0;
 static bool cmdSeen = false;
+// Quiet for this long and the next command is a new epoch whatever its
+// sequence says. Comfortably longer than the burst of repeats one command
+// sends, and far shorter than the gap between two presses of a button.
+static constexpr uint32_t CMD_EPOCH_MS = 3000;
 static uint32_t cmdCount = 0;
 static uint8_t helloSeq = 0;
 static uint32_t helloSent = 0;
@@ -418,10 +423,24 @@ static void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
   if (chorusCommandValid(data, len)) {
     ChorusCommand c;
     memcpy(&c, data, sizeof(c));
+    // The same epoch trap the feature path fell into, and it bit here too:
+    // the leader's command counter restarts at zero every time it reboots, so
+    // a plain "is this newer?" makes a freshly reflashed leader unable to
+    // command a badge that has been up all along. Observed on this bench --
+    // `pin 85dcdc iris` was accepted by the leader and silently ignored by the
+    // badge, which had last seen sequence 2.
+    //
+    // Commands are rare, so time is the better discriminator than sequence:
+    // anything after a few quiet seconds is new by definition, while the three
+    // copies of one command arrive within milliseconds of each other and are
+    // still deduped on sequence.
+    const uint32_t cmdNowMs = millis();
     const int16_t d = (int16_t)(c.seq - cmdLastSeq);
-    const bool fresh = !cmdSeen || d > 0 || d < -SEQ_REORDER_WINDOW;
-    if (!fresh) return;  // already seen down another path
+    const bool cmdGap = (cmdNowMs - cmdLastMs) > CMD_EPOCH_MS;
+    const bool fresh = !cmdSeen || d > 0 || cmdGap || d < -SEQ_REORDER_WINDOW;
+    if (!fresh) return;  // a repeat, or already seen down another relay path
     cmdLastSeq = c.seq;
+    cmdLastMs = cmdNowMs;
     cmdSeen = true;
     cmdCount++;
     if (chorusIdIsBroadcast(c.target) || chorusIdEq(c.target, myId)) applyCommand(c);
