@@ -161,18 +161,17 @@ void loop() {
   // a fixed cadence rather than once per analysis hop (62/s), which would eat
   // the audio budget for frames nobody can perceive.
   if (displayOk) {
-    static uint32_t lastDrawMs = 0;
-    static uint32_t drawFrames = 0, lastDrawReportMs = 0;
-    if (now - lastDrawMs >= 33) {
-      lastDrawMs = now;
-      const float feats[4] = {f.bass, f.mid, f.treble, f.energy};
-      conductorDisplayDraw(feats, f.onset ? 1 : 0, f.beatEnv, radio.sent(), displayFps);
-      drawFrames++;
-    }
-    if (now - lastDrawReportMs >= 1000) {
-      displayFps = drawFrames * 1000 / (now - lastDrawReportMs);
-      drawFrames = 0;
-      lastDrawReportMs = now;
+    // Publishing is a few stores under a spinlock; the frame itself is drawn on
+    // the other core, so this costs the audio path essentially nothing.
+    const float feats[4] = {f.bass, f.mid, f.treble, f.energy};
+    conductorDisplayDraw(feats, f.onset ? 1 : 0, f.beatEnv, radio.sent(), displayFps);
+    displayFps = conductorDisplayFps();
+
+    static uint32_t lastDrawLogMs = 0;
+    if (now - lastDrawLogMs >= 3000) {
+      lastDrawLogMs = now;
+      Serial.printf("[leader] draw %luus, %lu draw-fps\n",
+                    (unsigned long)conductorDisplayLastDrawUs(), (unsigned long)displayFps);
     }
   }
 
