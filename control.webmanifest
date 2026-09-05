@@ -1,0 +1,12 @@
+{
+  "name": "Chorus Control",
+  "short_name": "Chorus",
+  "start_url": "control.html",
+  "display": "standalone",
+  "background_color": "#07070b",
+  "theme_color": "#07070b",
+  "icons": [
+    { "src": "icons/leader-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/leader-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
