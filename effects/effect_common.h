@@ -120,11 +120,33 @@ void effect_chromadepth(float t, int *r, int *g, int *b);
 // out, which is why it belongs with the palettes above and not on its own.
 void effect_glow_lift(int *r, int *g, int *b);
 
-// Per-device palette identity, paper-cranes' `seed2`. Its shaders seed the
-// palette from a per-device random persisted in localStorage so every screen
-// gets its own one-of-a-kind look; a badge has something better than random --
-// its MAC. 0..1, default 0.5. Affects chroma (saturation) in effect_lush().
-void effect_set_seed(float seed01);
+// Like effect_lush(), but it reaches true black.
+//
+// lush() bottoms out at L=0.50: in 6.frag the darks come from compositing a
+// coverage-weighted field against a background, not from lightness, because
+// that shader has structure of its own and explicitly wants "no black voids"
+// filling a phone screen. A badge is the opposite case. The disc IS the whole
+// image, it is worn in the dark, and black there is not a void -- it is the
+// shape. Drawing straight through lush() took the fraction of mon below
+// luminance 32 from 44% to 0.3%, which is what "washed out, as if it never
+// goes to 0" describes.
+//
+// So hue and chroma come from a mid-lightness sample and the result is then
+// multiplied down. A multiply in linear space dims without pulling the colour
+// toward grey, which is what lowering L would have done.
+void effect_lush_shaded(float s, float lit, int *r, int *g, int *b);
+
+// Per-device identity, paper-cranes' seed / seed2 / seed3. Its shaders seed the
+// palette AND the structure from randoms persisted in localStorage so no two
+// screens look alike; a badge has something better than a random -- the MAC it
+// already answers to, so the badge you were handed stays the one you were
+// handed. All 0..1.
+//   hue        rotates every palette, so two badges side by side differ
+//   sat        chroma in effect_lush(), paper-cranes' seed2
+//   structure  whatever an effect wants: mon offsets its spin rate with it
+void effect_set_seeds(float hue, float sat, float structure);
+float effect_seed_hue(void);
+float effect_seed_structure(void);
 
 #define EFFECT_TAU 6.28318530718f
 

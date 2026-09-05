@@ -62,6 +62,17 @@ void effect_geom_init(void) {
 // constant comes from. Nothing here runs per pixel.
 
 static float s_seed2 = 0.5f;
+static float s_seed_hue = 0.0f;
+static float s_seed_struct = 0.5f;
+
+void effect_set_seeds(float hue, float sat, float structure) {
+  s_seed_hue = effect_clamp01(hue);
+  s_seed2 = effect_clamp01(sat);
+  s_seed_struct = effect_clamp01(structure);
+}
+
+float effect_seed_hue(void) { return s_seed_hue; }
+float effect_seed_structure(void) { return s_seed_struct; }
 
 // Linear -> sRGB.
 //
@@ -96,10 +107,6 @@ static float srgb_encode(float c) {
   return s_srgb_lut[i] + (s_srgb_lut[i + 1] - s_srgb_lut[i]) * (f - (float)i);
 }
 
-void effect_set_seed(float seed01) {
-  s_seed2 = seed01 < 0.0f ? 0.0f : (seed01 > 1.0f ? 1.0f : seed01);
-}
-
 void effect_oklab_rgb(float L, float a, float b, int *r, int *g, int *bl) {
   float l_ = L + 0.3963377774f * a + 0.2158037573f * b;
   float m_ = L - 0.1055613458f * a - 0.0638541728f * b;
@@ -125,6 +132,17 @@ void effect_lush(float s, float lit, int *r, int *g, int *b) {
   // across a field rather than as a pastel smear.
   const float C = (0.125f + s_seed2 * 0.05f) + 0.05f * sinf(s * EFFECT_TAU * 0.5f + 1.3f);
   effect_oklab_rgb(L, C * cosf(h), C * sinf(h), r, g, b);
+}
+
+void effect_lush_shaded(float s, float lit, int *r, int *g, int *b) {
+  const float l = effect_clamp01(lit);
+  effect_lush(s, 0.22f + 0.62f * l, r, g, b);
+  // smoothstep, so it is exactly 0 at 0 and the low end is crushed rather than
+  // merely dim -- contrast on a 240px disc in a dark field is the whole point.
+  const float shade = l * l * (3.0f - 2.0f * l);
+  *r = (int)((float)*r * shade);
+  *g = (int)((float)*g * shade);
+  *b = (int)((float)*b * shade);
 }
 
 void effect_chromadepth(float t, int *r, int *g, int *b) {

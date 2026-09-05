@@ -130,7 +130,7 @@ static void plasma_render(uint16_t *out, const EffectInput *in) {
   // "gentle so loud stays saturated, not pastel". A hit now pushes a brighter,
   // hue-shifted sample of the same palette instead of bleaching toward white.
   const float litBase = 0.55f + 0.35f * effect_clamp01((0.25f + (0.45f * energy + 0.45f * env) * react) * glowk);
-  const float hueBase = (float)s_hue / 255.0f + knob(3);
+  const float hueBase = (float)s_hue / 255.0f + knob(3) + effect_seed_hue() * 0.35f;
   const float accent = effect_clamp01(0.9f * env * env * react);
   // lush()'s lightness floor is 0.50 -- in 6.frag the darks come from compositing
   // against a field and from coverage, not from L, because that shader has
@@ -145,10 +145,11 @@ static void plasma_render(uint16_t *out, const EffectInput *in) {
     // Most of a turn across the field, so neighbouring bands are clearly
     // different colours rather than neighbouring shades of one.
     const float sp = hueBase + u * 0.90f;
-    const float lit = 0.30f + 0.55f * ripple;
-    const float shade = (0.14f + 0.86f * ripple) * litBase;
+    // No floor on the shade: a 0.14 one kept the whole field glowing and was
+    // half of why this read as washed out.
+    const float shade = ripple * ripple * (3.0f - 2.0f * ripple) * litBase;
     int r, g, b;
-    effect_lush(sp, lit, &r, &g, &b);
+    effect_lush(sp, 0.30f + 0.55f * ripple, &r, &g, &b);
     r = (int)(r * shade);
     g = (int)(g * shade);
     b = (int)(b * shade);

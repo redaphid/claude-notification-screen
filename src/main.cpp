@@ -356,7 +356,9 @@ static void monSelectForThisBadge() {
   // localStorage, so no two screens look quite alike. A badge has something
   // better than a random: the MAC it already answers to. Same idea, and the
   // badge you were handed stays the badge you were handed.
-  effect_set_seed((float)((tail * 2654435761u) >> 24) / 255.0f);
+  effect_set_seeds((float)((tail * 2654435761u) >> 24) / 255.0f,
+                   (float)((tail * 40503u + 12345u) >> 8 & 0xFFu) / 255.0f,
+                   (float)((tail * 2246822519u) >> 24) / 255.0f);
   Serial.printf("[badge] crest: %s (mon variant %d)\n", mon_variant_name(variant), variant);
 }
 

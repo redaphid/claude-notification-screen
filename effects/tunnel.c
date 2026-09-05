@@ -160,19 +160,14 @@ static void tunnel_render(uint16_t *out, const EffectInput *in) {
   // travels a little with depth, which is 6.frag's "depth-coherent" idea in
   // its simplest form: the far end of the tunnel is not merely a darker
   // version of the mouth, it is a different colour.
-  const float hueBase = (float)s_hue / 255.0f + knob(3);
+  const float hueBase = (float)s_hue / 255.0f + knob(3) + effect_seed_hue() * 0.35f;
   for (int i = 0; i < 256; ++i) {
     const float u = (float)i / 256.0f;  // already the brightness ramp
     int r, g, b;
-    effect_lush(hueBase + u * 0.38f, u * bright, &r, &g, &b);
-    // The throat is the vanishing point and has to reach true black, so the
-    // palette is faded rather than left at lush()'s lightness floor.
-    if (u < 0.30f) {
-      const float k = u / 0.30f;
-      r = (int)(r * k);
-      g = (int)(g * k);
-      b = (int)(b * k);
-    }
+    // Shaded, so the far end of the tunnel is black rather than lush()'s
+    // lightness floor -- the throat is the vanishing point and a tunnel whose
+    // depths glow is not a tunnel.
+    effect_lush_shaded(hueBase + u * 0.38f, u * bright, &r, &g, &b);
     effect_glow_lift(&r, &g, &b);
     s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8(r), (uint8_t)effect_clamp_u8(g),
                              (uint8_t)effect_clamp_u8(b));

@@ -187,17 +187,13 @@ static void iris_render(uint16_t *out, const EffectInput *in) {
   // gain a hue that travels with it, so the iris reads as coloured depth
   // rather than as one hue getting darker.
   const float gain = effect_clamp01((150.0f + 105.0f * (0.35f + 0.40f * energy + 0.45f * env)) / 255.0f);
-  const float hueBase = (float)s_hue / 255.0f + knob(3);
+  const float hueBase = (float)s_hue / 255.0f + knob(3) + effect_seed_hue() * 0.35f;
   for (int i = 0; i < 256; ++i) {
     const float u = (float)i / 256.0f;
     int r, g, b;
-    effect_lush(hueBase + u * 0.26f, u * gain, &r, &g, &b);
-    if (u < 0.22f) {  // the pupil goes to true black
-      const float k = u / 0.22f;
-      r = (int)(r * k);
-      g = (int)(g * k);
-      b = (int)(b * k);
-    }
+    // Shaded: the pupil is black, and the dark between the rings is what makes
+    // them read as rings at all.
+    effect_lush_shaded(hueBase + u * 0.26f, u * gain, &r, &g, &b);
     effect_glow_lift(&r, &g, &b);
     s_pal[i] = effect_rgb565((uint8_t)effect_clamp_u8(r), (uint8_t)effect_clamp_u8(g),
                              (uint8_t)effect_clamp_u8(b));

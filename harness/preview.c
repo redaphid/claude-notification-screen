@@ -22,6 +22,7 @@
 #include <time.h>
 
 #include "../effects/effects.h"
+#include "../effects/effect_common.h"
 #include "../effects/knobs.h"
 #include "mock_dj.h"
 
@@ -104,7 +105,11 @@ static void usage(void) {
   fprintf(stderr,
           "usage: preview [--effect NAME] [--frames N] [--fps F] [--bpm B]\n"
           "               [--out DIR] [--bench N] [--list] [--knobs]\n"
-          "               [--knob N=V ...]   N is 1..%d, V is 0..255\n",
+          "               [--knob N=V ...]   N is 1..%d, V is 0..255\n"
+          "               [--seed HEX]       a badge MAC tail, e.g. 85dcdc, to\n"
+          "                                  preview that badge's palette+crest\n"
+          "                                  (the six bench badges in KnownBadge\n"
+          "                                  wear their NAMED crest instead)\n",
           KNOB_COUNT);
 }
 
@@ -116,6 +121,7 @@ int main(int argc, char **argv) {
   float bpm = 118.0f;
   int bench = 0;
   int show_knobs = 0;
+  const char *seedhex = NULL;
   const char *setk[KNOB_COUNT];
   int nset = 0;
 
@@ -135,6 +141,8 @@ int main(int argc, char **argv) {
       bpm = (float)atof(argv[++i]);
     } else if (!strcmp(argv[i], "--bench") && i + 1 < argc) {
       bench = atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--seed") && i + 1 < argc) {
+      seedhex = argv[++i];
     } else if (!strcmp(argv[i], "--knobs")) {
       show_knobs = 1;
     } else if (!strcmp(argv[i], "--knob") && i + 1 < argc) {
@@ -155,6 +163,22 @@ int main(int argc, char **argv) {
     for (int e = 0; e < effects_count; ++e) fprintf(stderr, " %s", effects_all[e]->name);
     fprintf(stderr, "\n");
     return 2;
+  }
+
+  // Same three hashes of the MAC tail the badge firmware uses, so a preview
+  // here is that badge's actual palette rather than a generic one.
+  if (seedhex) {
+    // uint32_t, not unsigned long. On a 64-bit host `unsigned long` is 64 bits,
+    // so these hashes never wrap the way they do on the ESP32 and every seed
+    // clamped to 1.0 -- six different badges previewed as the same colour while
+    // the firmware was doing the right thing all along.
+    const uint32_t tail = (uint32_t)strtoul(seedhex, NULL, 16);
+    effect_set_seeds((float)((tail * 2654435761u) >> 24) / 255.0f,
+                     (float)(((tail * 40503u + 12345u) >> 8) & 0xFFu) / 255.0f,
+                     (float)((tail * 2246822519u) >> 24) / 255.0f);
+    // And the crest itself, the same way src/main.cpp picks it, so a preview is
+    // that badge rather than a generic one.
+    mon_select((int)(((tail * 2654435761u) >> 8) % (uint32_t)mon_variant_count()));
   }
 
   // Knobs default to what this effect declares, then the command line

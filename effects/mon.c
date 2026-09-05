@@ -81,9 +81,11 @@ const char *mon_variant_name(int variant) {
 // black voids" so the whole screen emits light and reads from across a room;
 // the surround here is a dim, hue-shifted member of the same family.
 static void build_palette(uint8_t hue, float energy, float treble, float env) {
-  const float s0 = (float)hue / 255.0f;                     // the crest's own hue
+  // Per-device hue on top of the crest's own, so two badges beside each other
+  // are visibly different objects rather than two copies of one.
+  const float s0 = (float)hue / 255.0f + effect_seed_hue() * 0.35f;
   const float fill = 0.30f + 0.42f * energy;                // deep-inside lightness
-  const float reach = 2.5f + 9.0f * energy + 6.0f * env;    // outer glow e-fold, motif px
+  const float reach = 2.0f + 5.0f * energy + 3.5f * env;    // outer glow e-fold, motif px
   const float rimw = 1.2f + 2.2f * treble;                  // rim band width, motif px
   for (int i = 0; i < 256; ++i) {
     const float d = (float)(i - 128) / (float)MON_SDF_SCALE;
@@ -95,11 +97,23 @@ static void build_palette(uint8_t hue, float energy, float treble, float env) {
     } else {
       const float glow = expf(-d / reach) * (0.50f + 0.50f * env);
       const float rim = d < rimw ? (1.0f - d / rimw) : 0.0f;
-      lit = 0.16f + 0.74f * glow + 0.30f * rim;
+      // No floor. The surround is the dark the crest is a shape against, and a
+      // 0.16 floor here is what made the whole disc glow evenly and read as
+      // washed out.
+      lit = 0.82f * glow + 0.30f * rim;
       accent = rim * (0.20f + 0.55f * env);
     }
     int r, g, b;
-    effect_lush(s0, lit, &r, &g, &b);
+    // The crest is a lit SHAPE and the surround is the dark it is a shape
+    // against, so the two halves of the field are coloured by different rules.
+    // Shading the inside as well turned the crest into a filigree outline --
+    // its interior went dark and only the boundary survived, which is a
+    // contour map, not a family crest.
+    if (d < 0.0f) {
+      effect_lush(s0, lit, &r, &g, &b);
+    } else {
+      effect_lush_shaded(s0, lit, &r, &g, &b);
+    }
     if (accent > 0.0f) {
       int ar, ag, ab;
       effect_lush(s0 + 0.18f, 1.0f, &ar, &ag, &ab);
@@ -226,13 +240,18 @@ static void mon_render(uint16_t *out, const EffectInput *in) {
   // ---- motion: slow turn, faster with mid, a discrete kick on the onset ----
   if (in->beat) s_kick += 2.4f * kickk;
   s_kick *= expf(-(float)dt / 260.0f);
-  s_theta += (0.12f * spink + 0.60f * mid * spink * react * 0.5f + s_kick) * (float)dt * 0.001f;
+  s_theta += (0.12f * spink * (0.7f + 0.6f * effect_seed_structure())
+              + 0.60f * mid * spink * react * 0.5f + s_kick) * (float)dt * 0.001f;
   if (s_theta > 6.2831853f) s_theta -= 6.2831853f;
 
   // ---- size: the crest fills screen_r pixels ------------------------------
   // The base radius is the knob; everything the music adds to it is scaled by
   // reactivity, so turning that down does not also shrink the crest.
-  const float base_r = (s_chroma ? 96.0f : 92.0f) * sizek;
+  // The crest used to fill 83% of the disc radius, which magnified a 128px
+  // signed-distance field by 1.74x and looked exactly as soft as that sounds.
+  // At 74px it fills 62%, the field is magnified 1.3x, and the silhouette edge
+  // is carried by more source pixels than screen pixels for the first time.
+  const float base_r = (s_chroma ? 82.0f : 74.0f) * sizek;
   const float swell = s_chroma
       ? (42.0f * energy + 18.0f * bass + 16.0f * env)
       : (12.0f * bass + 10.0f * env);
