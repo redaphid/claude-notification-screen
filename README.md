@@ -167,13 +167,40 @@ the ones a stranger would experience.
 
 ## Status
 
-Verified on hardware: panel, backlight, colour order, sprite byte order, effect
-render path, frame budget (**32 fps**), radio bring-up, PSRAM, and ESP-NOW
-transmit (`tx ok`, zero failures).
+**The swarm works.** Two boards, end to end: the leader's microphone hears the
+room, analyzes it, broadcasts over ESP-NOW at 30Hz, and the badge renders it at
+31 fps. Verified on hardware, watched through a webcam.
 
-Not yet verified: **two badges in the same room** — relay, dedupe and hop
-counting are single-board tested only; the conductor on real 1.46 hardware; and
-an actual flash from the web page.
+Verified: panel, backlight, colour order, sprite byte order, effect render path,
+frame budget, radio bring-up, PSRAM, ESP-NOW transmit *and* receive, mesh relay,
+sequence dedupe, conductor restart recovery, and the I2S microphone chain on the
+1.46 — mic pins BCLK 15 / WS 2 / DIN 39 were right on the first try, and the
+analysis costs 1.67ms average against a 16ms hop.
 
-See `docs/bench-log-2026-09-02.md` for the bench findings, including a
+Not yet verified: more than two boards at once (relay hop counting has never had
+a third node to hop *through*), range and body absorption at any real distance,
+battery operation, and an actual flash from the web page.
+
+### The bug that only two boards could find
+
+The badge's receive counter froze at exactly 2434 and its screen went dark while
+the leader transmitted happily and reported no send failures.
+
+Sequence numbers restart at zero when the conductor reboots — a battery swap, a
+reset, a crash, a reflash. A wrap-safe "is this newer?" dedupe then rejects
+*every* packet until the counter climbs back past where it left off: over a
+minute of dead swarm for a conductor that had been running two minutes, and
+closer to half an hour in the worst case. At a rave, somebody swaps the
+conductor's battery and every badge in the field goes dark with no indication
+why.
+
+It was diagnosed by prediction rather than inspection — if the theory was right,
+reception should resume on its own the moment the counter passed 2434. It did.
+The fix also accepts a packet when nothing has been heard recently, or when its
+sequence is far enough behind to be a new epoch rather than a reordered
+straggler; the narrow reorder window still suppresses relay storms. Verified by
+restarting the conductor mid-stream: reception continued through it, the only
+gap being the conductor's own boot time.
+
+See `docs/bench-log-2026-09-02.md` for the earlier bench findings, including a
 correction about which power problems were the badge and which were the host.
