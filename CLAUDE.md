@@ -22,6 +22,13 @@ in the repo.
 - `docs/` guides and bench logs. Start with `docs/effects.md`.
 - `CONVERSATION.md` written conversation between the two benches' agents.
 
+## The button on the back
+
+Held at reset it makes a badge the conductor. While the badge is running: tap
+for the next effect (and stay on it), hold 1.2s to follow the leader again. A
+pin outranks `BADGE_LOCK_EFFECT` on purpose -- the bag builds pick a default,
+they do not forbid a wearer from changing their mind.
+
 ## The two frozen contracts
 
 `src/chorus_packet.h` (the 24 bytes on the air) and `effects/effect.h` (what
@@ -39,6 +46,19 @@ Do not edit them casually.
   (uv-installed PlatformIO, a DNS-blocked registry mirror) are in
   `docs/windows-flashing.md`.
 - **Flash a badge (Linux):** `pio run -t upload` (port in `platformio.ini`).
+- **Control the swarm from a phone:** flash the leader with
+  `pio run -e conductor_ble -t upload`, then open
+  https://redaphid.github.io/claude-notification-screen/control.html in Chrome
+  on Android. Pick what everyone shows, see every badge that has beaconed, and
+  pin one person's badge to one visual. `docs/control.md` has the whole story;
+  `conductor/leader_link.h` is the contract. From a laptop instead:
+  `python3 scripts/test/leader-ble.py`.
+- **Address one badge:** badges answer to the last three bytes of their MAC
+  (printed at boot, `[badge] id 85dcdc`). On the leader's console: `who`,
+  `rollcall`, `pin <id|all> <effect>`, `free <id|all>`, `find <id|all> [secs]`,
+  `dim <id|all> <0-255>`. These ride `src/chorus_command.h` -- a second wire
+  contract alongside the frozen packet, so old badges ignore it rather than
+  breaking.
 - **Choose what the swarm shows:** on the leader's serial console type an
   effect name (`plasma`, `tunnel`, `iris`, `mon`, `chroma`), `shader <n>`,
   `next`, `prev`, `cycle <ms>`, or `?`. Every badge follows; each keeps its
@@ -52,6 +72,15 @@ Do not edit them casually.
   rx rate, relays and stalls across every attached badge.
 
 ## Hardware facts that cost time
+
+Ports are resolved by USB identity (`tools/pick-port.py`), not by ttyACM number:
+the badge is a CH343 bridge (1A86:55D3), the leader is the S3's own USB
+(303A:1001). Before that existed, the badge env hardcoded `/dev/ttyACM0` -- which
+with the leader plugged in first IS the leader.
+
+`WiFi.setSleep(true)` is a no-op that only logs when it dislikes the current
+mode. Call `esp_wifi_set_ps()` directly and check the result; a skipped call
+here shows up as an `abort()` in `coex_core_enable()` three lines later.
 
 Badge backlight is GPIO40 (not 2), reset GPIO12 (not 14), `invert = true`.
 See the README pin map. Badges enumerate on Windows as CH343 COM ports; the

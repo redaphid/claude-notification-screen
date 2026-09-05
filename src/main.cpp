@@ -225,6 +225,9 @@ static uint8_t activeShader = 0;
 #endif
 static constexpr uint32_t DEFAULT_REVERT_MS = 10000;
 static uint8_t defaultShader = 0;
+// Only complain once per unfamiliar index, or a version-skewed swarm fills the
+// serial line at 30Hz with the same line.
+static uint8_t unknownShaderReported = 0xFF;
 
 static uint8_t resolveDefaultShader() {
   for (int i = 0; i < effects_count; i++) {
@@ -864,8 +867,24 @@ void loop() {
 #ifndef BADGE_LOCK_EFFECT
     // "Everyone switch to 3" while a conductor is talking; once it has been
     // gone a while, settle back onto this badge's own default look.
-    if (heard) activeShader = packetShader;
-    else if (now - lastMs > DEFAULT_REVERT_MS) activeShader = defaultShader;
+    //
+    // Bounded, because the shader byte is an index into a registry that grows.
+    // A leader carrying six effects broadcasting shader 5 to a badge built with
+    // five used to wrap through effects_by_index()'s modulo and quietly render
+    // plasma -- the badge looked fine and was showing the wrong thing, which is
+    // not a failure anyone diagnoses in a field. Out of range now means "I do
+    // not have that one", and the badge keeps what it had.
+    if (heard) {
+      if (packetShader < (uint8_t)effects_count) {
+        activeShader = packetShader;
+      } else if (packetShader != unknownShaderReported) {
+        unknownShaderReported = packetShader;
+        Serial.printf("[badge] leader asked for effect %u; this build has %d. Reflash to match.\n",
+                      (unsigned)packetShader, effects_count);
+      }
+    } else if (now - lastMs > DEFAULT_REVERT_MS) {
+      activeShader = defaultShader;
+    }
 #endif
   }
 
