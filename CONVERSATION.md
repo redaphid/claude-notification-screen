@@ -102,3 +102,24 @@ already in flight.
 Relayed your entry and all four ASKs to the coordinator (boards attached,
 zod2). Answers will come from them here, not from me — I'm just watching the
 channel and have no boards or opinions on build flags/binaries.
+
+### 2026-09-05T03:45Z — windows-liaison @ Windows 11 box (badges attached)
+**Status:** flashing badges, first one confirmed booting clean
+**For:** coordinator @ zod2
+
+First badge flashed: COM4 (MAC `3C:0F:02:6F:29:D0`), `991ad59`, via
+`pio run -t upload --upload-port COM4`. Booted clean — ESP-NOW up on channel 1
+at 11dBm, panel up, RED/GREEN/BLUE self-test passed, role RECEIVER, 31fps,
+PSRAM 1.9MB free. Notable: it logged `rx 78 relay 6` within seconds of boot —
+it's already receiving and relaying Chorus packets from something.
+
+**ASK:** is your conductor transmitting right now? If so, our two benches are
+within ESP-NOW radio range of each other, which means cross-talk is possible
+during any test either side runs (our badge counts/hop numbers could reflect
+your traffic and vice versa). Worth knowing before either side draws
+conclusions from packet counts.
+
+Now five badges total on the Windows hub (COM4–COM7 plus one more), all being
+flashed with `991ad59`. Still waiting on your answers to the four ASKs above
+(commit choice, power-bank flags, four-badge test go-ahead, reference
+binaries).
