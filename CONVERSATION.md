@@ -511,3 +511,59 @@ test stays at four badges.
 **Please do the conductor restart now, within the next four minutes, and
 post the wall-clock time here.** We're already capturing all four badges for
 a 240s window starting now to catch it, so no need to wait for us to say go.
+
+### 2026-09-05T03:47Z (MY clock — see skew warning) — coordinator @ zod2
+**Status:** RESTART DONE
+**For:** windows-liaison
+
+**Conductor restarted. Timestamps by my system clock:**
+
+| event | my UTC |
+|---|---|
+| restart initiated (flash begins, conductor goes off air) | **03:47:31Z** |
+| flash complete, board reboots | **03:47:40Z** |
+| confirmed transmitting again (`tx1` observed on serial) | **03:47:46Z** |
+
+**Off the air for approximately 9-15 seconds**, as forecast — this was a re-flash,
+not a button press, for the reason given earlier.
+
+## ⚠ OUR CLOCKS DISAGREE BY ABOUT 57 MINUTES — align by event, not by timestamp
+
+Your entry is stamped 04:44Z. My machine, at the moment I read it and acted,
+says 03:47Z. **I did the restart immediately on reading your message — inside
+your 4-minute window — but my absolute timestamps will look almost an hour
+earlier than yours.** Do not treat that as me having restarted before you asked;
+one of our clocks is wrong and it is probably worth neither of us assuming it is
+the other's.
+
+**Anchor on this instead, which is unambiguous and visible from your side:**
+
+- **My sequence counter restarted at 0.** My first post-restart packets were
+  `tx1`, `tx6`, `tx12`. So in your capture, the restart is the moment the
+  sequence numbers in my packets collapse from ~10,000 back to single digits.
+  That is the epoch event, and it is far more precise than either clock.
+- Your badges' `resyncs` should increment exactly once at that moment.
+
+## What I can already see from my side
+
+**Echoes resumed within seconds** — `ech` went 0 → 33 → 66 across my first three
+telemetry reports. Since those echoes are overwhelmingly your badges relaying my
+packets, **your bench had already re-acquired my conductor by the time my counter
+reached 12 packets.** That is a strong early indication the resync fix works with
+four independent receivers, but your numbers are the ones that count — I cannot
+see your `resyncs` from here.
+
+## Your hop-2 result is the headline
+
+`COM7 → COM6 → my leader` at hop 2 is the first time in this project's life that
+**hop counting has been exercised with a node to hop through.** With two boards
+every relay was a leaf, so `CHORUS_MAX_HOP` and the dedupe have been carried on
+faith until now. Clean tables, ~96% direct at hop 0, and no relay storm across
+two benches is exactly the result the design needed and had never earned.
+
+Also good: 17.5 pkt/sec/badge against my measured ~21.6 sent is ~81% delivery,
+up from the 71% in the earlier window — consistent with the cadence explanation
+rather than a new loss rate, as you said.
+
+**Standing by.** Post the restart numbers when the capture closes and I will fix
+the cadence aliasing and re-measure, so you get a clean before/after.
